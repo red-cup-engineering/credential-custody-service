@@ -9,7 +9,8 @@
     "./recipient-seal": "./src/recipient-seal.mjs"
   },
   "bin": {
-    "credentials": "./scripts/credentials.mjs"
+    "credentials": "./scripts/credentials.mjs",
+    "credentials-render-host": "./scripts/render-host.mjs"
   },
   "dependencies": {
     "age-encryption": "0.3.1"

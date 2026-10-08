@@ -19,3 +19,12 @@ The cryptographic core (`cryptographic-data-service`) stays dependency-free; rec
 
 Custody only: authentication and authorization belong to the protocol and authority services that consume these
 values.
+
+## On a host
+
+A host's services read their credentials from a runtime directory rendered from the store, never from files kept
+in a home directory. `scripts/render-host.mjs` takes its configuration from the environment (`CREDENTIALS_STORE`,
+`CREDENTIALS_HOST`, `CREDENTIALS_RENDER_TO`, `CREDENTIALS_PULL=1`) so a deployment runs it as a oneshot unit on a
+timer; each service then reads `<dir>/<service>.env`. A file credential (a key, a service account) is rendered to
+`<dir>/files/<id>`; `credentials bind-file <id> --service <s> --variable NAME` puts `NAME=<that path>` in the
+service's env file, so the service never names a path of its own.

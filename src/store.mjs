@@ -95,7 +95,7 @@ export function openStore(dir) {
     /** The environment a service runs with on a host: each consumer variable bound to its credential's value. */
     async render(host, service) {
       const lines = [];
-      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
+      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable && !c.file) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
       return lines.sort().join('\n') + (lines.length ? '\n' : '');
     },
 
@@ -104,6 +104,35 @@ export function openStore(dir) {
       const out = [];
       for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.file) out.push({ id: rec.id, file: c.file, value: await this.get(rec.id, host) });
       return out;
+    },
+
+    /** Name the variable through which a service finds a file credential: render-host then binds it to the rendered file. */
+    bindFile(id, { host, service, variable }) {
+      const rec = record(id);
+      if (!rec) throw new Error(`no credential ${id}`);
+      const consumers = rec.consumers ?? [], hit = consumers.find((c) => c.host === host && c.service === service && c.file);
+      if (!hit) throw new Error(`${id} has no file consumer ${service} on ${host}`);
+      hit.variable = variable;
+      writeAtomic(recordPath(id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
+      return { id, host, service, variable };
+    },
+
+    /**
+     * Everything a host's services use, rendered into a directory only this user can read (a runtime tmpfs): one
+     * `<service>.env` per service (its secret variables, and each bound file credential's path) and one
+     * `files/<id>` per file credential. Re-run on a timer so rotations reach the services.
+     */
+    async renderHost(host, to) {
+      mkdirSync(join(to, 'files'), { recursive: true, mode: 0o700 }); chmodSync(to, 0o700);
+      const write = (path, text) => writeAtomic(path, text, 0o600);
+      const services = new Map(), fileIds = new Set();
+      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host) {
+        if (c.file) fileIds.add(rec.id);
+        if (c.variable) services.set(c.service, [...(services.get(c.service) ?? []), ...(c.file ? [`${c.variable}=${join(to, 'files', rec.id)}`] : [])]);
+      }
+      for (const id of fileIds) write(join(to, 'files', id), await this.get(id, host));
+      for (const [service, paths] of services) write(join(to, `${service}.env`), (await this.render(host, service)) + paths.sort().map((l) => `${l}\n`).join(''));
+      return { host, to, services: [...services.keys()].sort(), files: [...fileIds].sort() };
     },
 
     /** Rename a credential: its record, sealed value and requests move to the new id. */
