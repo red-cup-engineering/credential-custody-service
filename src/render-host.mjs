@@ -3,11 +3,17 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
+// Ownership manifests. The main one records only outputs every renderer version understands (files/<id>, <service>.env);
+// outputs at placed paths are recorded beside it, read only by renderers that place. During a release an older
+// renderer may run after a newer one (an interleaved receive, a rollback): it then reads a manifest it accepts, renders
+// its own layout, and leaves placed files alone; a newer renderer reconciles both on its next run.
 const MANIFEST = '.credential-custody-render.json';
+const PLACED_MANIFEST = '.credential-custody-render-placed.json';
+const everyVersion = (name) => name.startsWith('files/') || (name.endsWith('.env') && !name.includes('/'));
 const FILE_ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
 
 function serviceName(value) {
-  if (typeof value !== 'string' || !value.trim() || value.length > 240 || /[\u0000-\u001f\u007f/\\]/u.test(value) || value === '.' || value === '..') {
+  if (typeof value !== 'string' || !value.trim() || value.length > 240 || /[\^@-\^_\u007f/\\]/u.test(value) || value === '.' || value === '..') {
     throw new TypeError('a rendered service must be a single nonempty filename component');
   }
   return value;
@@ -120,13 +126,19 @@ export async function renderHost(store, host, dir) {
   directory(join(dir, 'files'));
   const releaseLock = acquireLock(join(dir, '.credential-custody-render.lock'));
   try {
-    const manifestPath = join(dir, MANIFEST);
-    let previous = [];
-    if (regularFile(manifestPath)) {
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const manifestPath = join(dir, MANIFEST), placedManifestPath = join(dir, PLACED_MANIFEST);
+    const owned = (path) => {
+      if (!regularFile(path)) return [];
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
       if (manifest.version !== 1 || manifest.host !== host || !Array.isArray(manifest.outputs) || (manifest.state !== undefined && !['rendering', 'complete'].includes(manifest.state))) throw new Error('invalid credential output manifest');
-      previous = manifest.outputs.map(managedPath);
-    }
+      return manifest.outputs.map(managedPath);
+    };
+    const previous = [...new Set([...owned(manifestPath), ...owned(placedManifestPath)])];
+    const record = (state, names) => {
+      const sorted = [...new Set(names)].sort();
+      writeAtomic(placedManifestPath, `${JSON.stringify({ version: 1, host, state, outputs: sorted.filter((name) => !everyVersion(name)) }, null, 2)}\n`);
+      writeAtomic(manifestPath, `${JSON.stringify({ version: 1, host, state, outputs: sorted.filter(everyVersion) }, null, 2)}\n`);
+    };
     const outputs = new Map();
     for (const [service, paths] of [...services].sort(([a], [b]) => a.localeCompare(b))) outputs.set(`${service}.env`, (await store.render(host, service)) + paths.sort().map(line => `${line}\n`).join(''));
     for (const [output, id] of [...fileOutputs].sort(([a], [b]) => a.localeCompare(b))) outputs.set(output, await store.get(id, host));
@@ -134,10 +146,10 @@ export async function renderHost(store, host, dir) {
     for (const name of new Set([...previous, ...outputs.keys()])) { realParents(dir, name); regularFile(join(dir, name)); }
     // Retain ownership of both generations before writing any new output. An interrupted
     // update can then be reconciled on retry, including outputs no longer requested.
-    writeAtomic(manifestPath, `${JSON.stringify({ version: 1, host, state: 'rendering', outputs: [...new Set([...previous, ...outputs.keys()])].sort() }, null, 2)}\n`);
+    record('rendering', [...previous, ...outputs.keys()]);
     for (const [name, text] of outputs) { directories(dir, name); writeAtomic(join(dir, name), text); }
     for (const name of previous) if (!outputs.has(name) && regularFile(join(dir, name))) unlinkSync(join(dir, name));
-    writeAtomic(manifestPath, `${JSON.stringify({ version: 1, host, state: 'complete', outputs: [...outputs.keys()].sort() }, null, 2)}\n`);
+    record('complete', [...outputs.keys()]);
     return { host, to: dir, services: [...services.keys()].sort(), files: [...fileOutputs.keys()].sort() };
   } finally { releaseLock(); }
 }
