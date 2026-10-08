@@ -13,5 +13,9 @@ import { openStore } from '../src/store.mjs';
 process.on('uncaughtException', (error) => { process.stderr.write(`render-host: ${error.message}\n`); process.exit(1); });
 const need = (name) => process.env[name] || (() => { throw new Error(`${name} is required`); })();
 const store = need('CREDENTIALS_STORE'), host = need('CREDENTIALS_HOST'), to = need('CREDENTIALS_RENDER_TO');
-if (process.env.CREDENTIALS_PULL === '1') execFileSync('git', ['-C', store, 'pull', '-q', '--ff-only'], { stdio: ['ignore', 'inherit', 'inherit'] });
+// The services wait on this render: an unreachable origin renders what the checkout already holds.
+if (process.env.CREDENTIALS_PULL === '1') {
+  try { execFileSync('git', ['-C', store, 'pull', '-q', '--ff-only'], { stdio: ['ignore', 'inherit', 'inherit'], timeout: 60_000 }); }
+  catch (error) { process.stderr.write(`render-host: pull failed, rendering the checkout as it stands: ${error.message.split('\n')[0]}\n`); }
+}
 process.stdout.write(`${JSON.stringify(await openStore(store).renderHost(host, to))}\n`);
