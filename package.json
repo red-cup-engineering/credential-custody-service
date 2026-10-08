@@ -1,0 +1,26 @@
+{
+  "name": "@red-cup-engineering/credential-custody-service",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Credential custody: a registry of an organization's credentials and their values sealed to the hosts allowed to use them, kept in a services section's data directory. Get, put, render a service's environment, import env files, audit plaintext copies, request what is missing.",
+  "exports": {
+    "./store": "./src/store.mjs",
+    "./package.json": "./package.json",
+    "./recipient-seal": "./src/recipient-seal.mjs"
+  },
+  "bin": {
+    "credentials": "./scripts/credentials.mjs"
+  },
+  "dependencies": {
+    "age-encryption": "0.3.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/red-cup-engineering/computer-data-services-section.git",
+    "directory": "services/credential-custody-service"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED"
+}
