@@ -15,7 +15,7 @@
  * or authorize anything.
  */
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
 
@@ -95,8 +95,26 @@ export function openStore(dir) {
     /** The environment a service runs with on a host: each consumer variable bound to its credential's value. */
     async render(host, service) {
       const lines = [];
-      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
+      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
       return lines.sort().join('\n') + (lines.length ? '\n' : '');
+    },
+
+    /** The files a service runs with on a host: each file consumer's path and its credential's value. */
+    async files(host, service) {
+      const out = [];
+      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.file) out.push({ id: rec.id, file: c.file, value: await this.get(rec.id, host) });
+      return out;
+    },
+
+    /** Rename a credential: its record, sealed value and requests move to the new id. */
+    rename(from, to) {
+      const rec = record(from);
+      if (!rec) throw new Error(`no credential ${from}`);
+      if (record(to)) throw new Error(`credential ${to} already exists`);
+      writeAtomic(recordPath(to), `${JSON.stringify({ ...rec, id: to }, null, 2)}\n`);
+      renameSync(join(dir, 'sealed', `${from}.age`), join(dir, 'sealed', `${to}.age`));
+      unlinkSync(recordPath(from));
+      return { from, to };
     },
 
     /** Ask for a credential this store does not hold; the person who can obtain it works this list. */
