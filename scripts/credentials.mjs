@@ -14,6 +14,9 @@
  *                                    become one credential with several consumers); non-secret settings stay put
  *   audit [--scan <dir>]…            credentials past rotation, requests outstanding, and plaintext copies of stored
  *                                    values (or unstored secrets) in env files under the scanned directories
+ *   import-file <path> --service <s> --id <id>   take a credential that is a whole file (a key, a service account)
+ *   render-files <service>           write a service's file credentials on this host (0600)
+ *   rename <from> <to>               give a credential a better id
  *   request <id> --reason "…"       ask for a credential the store does not hold
  *   requests                         the outstanding requests
  *   reseal                           reseal every credential this host can open to its current holders
@@ -29,10 +32,10 @@ import { fingerprint, isSecretName, openStore, parseEnv } from '../src/store.mjs
 // A refusal is a sentence for the person or agent reading it, not a stack trace.
 process.on('uncaughtException', (error) => { process.stderr.write(`credentials: ${error.message}\n`); process.exit(1); });
 
-const { values: o, positionals: [command, arg] } = parseArgs({ allowPositionals: true, options: {
+const { values: o, positionals: [command, arg, arg2] } = parseArgs({ allowPositionals: true, options: {
   store: { type: 'string' }, host: { type: 'string' }, holders: { type: 'string' }, kind: { type: 'string' }, provider: { type: 'string' },
   owner: { type: 'string' }, purpose: { type: 'string' }, 'rotate-days': { type: 'string' }, service: { type: 'string' }, out: { type: 'string' },
-  reason: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+  reason: { type: 'string' }, id: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
 } });
 const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? process.env.CREDENTIALS_HOST;
 const fail = (message) => { process.stderr.write(`${message}\n`); process.exit(2); };
@@ -70,12 +73,30 @@ else if (command === 'put') {
       if (!o['dry-run']) byFingerprint.set(existing.fingerprint, await store.put(existing.id, value, { ...existing, holders: [...new Set([...existing.holders, ...holders])], consumers }));
       report.joined.push(`${variable} -> ${existing.id}`);
     } else {
-      const id = slug(`${service}.${variable}`);
+      // An id already holding a different value (the same variable on another host, say) is never overwritten.
+      let id = slug(`${service}.${variable}`);
+      if (store.record(id)) id = slug(`${service}.${variable}.${me}`);
       if (!o['dry-run']) byFingerprint.set(fingerprint(value), await store.put(id, value, { holders, consumers: [consumer], purpose: `${variable} for ${service}` }));
       report.imported.push(`${variable} -> ${id}`);
     }
   }
   out(report);
+} else if (command === 'import-file') {
+  const file = arg ?? fail('import-file <path> --service <s> --id <id> [--kind] [--provider]'), service = o.service ?? fail('--service is required'), me = needHost();
+  const id = o.id ?? fail('--id names the credential (e.g. kalshi.api-private-key)');
+  const value = readFileSync(file, 'utf8'), existing = store.record(id);
+  if (existing && existing.fingerprint !== fingerprint(value)) fail(`credential ${id} already holds a different value`);
+  const consumers = [...(existing?.consumers ?? []).filter((c) => !(c.host === me && c.file === file)), { host: me, service, file }];
+  const rec = await store.put(id, value, { ...(existing ?? {}), holders: [...new Set([...(existing?.holders ?? []), me])], consumers, ...(o.kind ? { kind: o.kind } : {}), ...(o.provider ? { provider: o.provider } : {}), ...(existing ? {} : { purpose: `${file} for ${service}` }) });
+  out({ id: rec.id, holders: rec.holders, file });
+} else if (command === 'render-files') {
+  const written = [];
+  for (const { id, file, value } of await store.files(needHost(), arg ?? fail('render-files <service>'))) {
+    writeFileSync(`${file}.tmp`, value, { mode: 0o600 }); chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file); written.push({ id, file });
+  }
+  out({ written });
+} else if (command === 'rename') {
+  out(store.rename(arg ?? fail('rename <from> <to>'), arg2 ?? fail('rename <from> <to>')));
 } else if (command === 'audit') {
   const records = store.records(), byFingerprint = new Map(records.map((r) => [r.fingerprint, r.id]));
   const report = { credentials: records.length, overdue: records.filter((r) => r.rotateEveryDays && days(r.rotatedAt) > r.rotateEveryDays).map((r) => r.id), requests: store.requests().filter((r) => r.state === 'requested').map((r) => r.id), plaintextCopies: [], unstoredSecrets: [] };
