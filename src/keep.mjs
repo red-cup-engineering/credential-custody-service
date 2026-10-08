@@ -70,3 +70,16 @@ export async function keepCredential({ id, value, service, path, variable, kind 
   await store.renderHost(host, dir);
   return { id: name, host, service, ...(path ? { path: join(dir, path) } : {}), ...(variable ? { variable } : {}), ...commitAndPush(storeDir, `Keep ${name} (${host}: ${service})`) };
 }
+
+/**
+ * Forget a credential a process has revoked (a grant withdrawn, a key rotated out): it leaves the store, this host
+ * re-renders (its output is withdrawn), and the store commits and pushes. Returns whether the store held it.
+ */
+export async function forgetCredential({ id }, env = process.env) {
+  const storeDir = need(env, 'CREDENTIALS_STORE', 'no credential store is configured for this process to forget credentials in');
+  const host = need(env, 'CREDENTIALS_HOST', 'this process does not know which host it is');
+  const store = openStore(storeDir);
+  if (!store.remove(id)) return { id, forgotten: false };
+  await store.renderHost(host, credentialsDirectory(env));
+  return { id, forgotten: true, ...commitAndPush(storeDir, `Forget ${id} (${host})`) };
+}

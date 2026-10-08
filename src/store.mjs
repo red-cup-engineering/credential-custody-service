@@ -139,6 +139,14 @@ export function openStore(dir) {
       return renderHostCredentials(this, host, to);
     },
 
+    /** Remove a credential that is revoked or retired: its record and sealed value leave the store (git keeps history). */
+    remove(id) {
+      if (!record(id)) return false;
+      unlinkSync(recordPath(id));
+      try { unlinkSync(join(dir, 'sealed', `${id}.age`)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      return true;
+    },
+
     /** Rename a credential: its record, sealed value and requests move to the new id. */
     rename(from, to) {
       const rec = record(from);
