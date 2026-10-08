@@ -16,6 +16,7 @@
  *                                    values (or unstored secrets) in env files under the scanned directories
  *   import-file <path> --service <s> --id <id>   take a credential that is a whole file (a key, a service account)
  *   render-files <service>           write a service's file credentials on this host (0600)
+ *   render-host --to <dir>           every service's env file and every file credential this host uses (0700/0600)
  *   rename <from> <to>               give a credential a better id
  *   request <id> --reason "…"       ask for a credential the store does not hold
  *   requests                         the outstanding requests
@@ -24,7 +25,7 @@
  * An agent that needs a credential runs `get`; when the store does not hold it, `request`. It never asks a
  * person to sign in for it.
  */
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, chmodSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, chmodSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fingerprint, isSecretName, openStore, parseEnv } from '../src/store.mjs';
@@ -35,7 +36,7 @@ process.on('uncaughtException', (error) => { process.stderr.write(`credentials: 
 const { values: o, positionals: [command, arg, arg2] } = parseArgs({ allowPositionals: true, options: {
   store: { type: 'string' }, host: { type: 'string' }, holders: { type: 'string' }, kind: { type: 'string' }, provider: { type: 'string' },
   owner: { type: 'string' }, purpose: { type: 'string' }, 'rotate-days': { type: 'string' }, service: { type: 'string' }, out: { type: 'string' },
-  reason: { type: 'string' }, id: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+  reason: { type: 'string' }, id: { type: 'string' }, to: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
 } });
 const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? process.env.CREDENTIALS_HOST;
 const fail = (message) => { process.stderr.write(`${message}\n`); process.exit(2); };
@@ -95,6 +96,17 @@ else if (command === 'put') {
     writeFileSync(`${file}.tmp`, value, { mode: 0o600 }); chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file); written.push({ id, file });
   }
   out({ written });
+} else if (command === 'render-host') {
+  // Everything this host's services use, rendered where only this user can read it: one env file per service
+  // (its secret variables) and one file per file credential. Re-run on a timer so rotations reach the services.
+  const me = needHost(), dir = o.to ?? fail('render-host --to <runtime dir> (e.g. $XDG_RUNTIME_DIR/561-group-credentials)');
+  mkdirSync(join(dir, 'files'), { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700);
+  const write = (path, text) => { writeFileSync(`${path}.tmp`, text, { mode: 0o600 }); chmodSync(`${path}.tmp`, 0o600); renameSync(`${path}.tmp`, path); };
+  const services = new Set(), fileIds = new Set();
+  for (const rec of store.records()) for (const c of rec.consumers ?? []) if (c.host === me) { if (c.variable) services.add(c.service); if (c.file) fileIds.add(rec.id); }
+  for (const service of services) write(join(dir, `${service}.env`), await store.render(me, service));
+  for (const id of fileIds) write(join(dir, 'files', id), await store.get(id, me));
+  out({ host: me, to: dir, services: [...services].sort(), files: [...fileIds].sort() });
 } else if (command === 'rename') {
   out(store.rename(arg ?? fail('rename <from> <to>'), arg2 ?? fail('rename <from> <to>')));
 } else if (command === 'audit') {
