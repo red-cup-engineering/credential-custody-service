@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
+import { renderHost as renderHostCredentials } from './render-host.mjs';
 
 export const KINDS = Object.freeze(['api-key', 'oauth-client-secret', 'oauth-refresh-token', 'token', 'password', 'passphrase', 'private-key', 'session-secret', 'other']);
 const ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
@@ -123,16 +124,7 @@ export function openStore(dir) {
      * `files/<id>` per file credential. Re-run on a timer so rotations reach the services.
      */
     async renderHost(host, to) {
-      mkdirSync(join(to, 'files'), { recursive: true, mode: 0o700 }); chmodSync(to, 0o700);
-      const write = (path, text) => writeAtomic(path, text, 0o600);
-      const services = new Map(), fileIds = new Set();
-      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host) {
-        if (c.file) fileIds.add(rec.id);
-        if (c.variable) services.set(c.service, [...(services.get(c.service) ?? []), ...(c.file ? [`${c.variable}=${join(to, 'files', rec.id)}`] : [])]);
-      }
-      for (const id of fileIds) write(join(to, 'files', id), await this.get(id, host));
-      for (const [service, paths] of services) write(join(to, `${service}.env`), (await this.render(host, service)) + paths.sort().map((l) => `${l}\n`).join(''));
-      return { host, to, services: [...services.keys()].sort(), files: [...fileIds].sort() };
+      return renderHostCredentials(this, host, to);
     },
 
     /** Rename a credential: its record, sealed value and requests move to the new id. */
