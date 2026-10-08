@@ -28,3 +28,20 @@ in a home directory. `scripts/render-host.mjs` takes its configuration from the 
 timer; each service then reads `<dir>/<service>.env`. A file credential (a key, a service account) is rendered to
 `<dir>/files/<id>`; `credentials bind-file <id> --service <s> --variable NAME` puts `NAME=<that path>` in the
 service's env file, so the service never names a path of its own.
+
+## Safe runtime rendering
+
+Service names must be single filename components. The runtime directory and its `files/` directory are mode
+`0700`; outputs and the value-free ownership manifest are mode `0600`. Later renders withdraw only outputs
+recorded in that manifest and no longer declared for this host, preserving unrelated files. Use a fresh runtime
+directory when adopting this behavior: older renderers left no ownership records, so their files are not guessed
+at or deleted. Symlinked paths and malformed or foreign-host manifests are refused.
+
+Rendering requires Linux's util-linux `flock`. Its kernel lock refuses concurrent renderers and releases when
+the renderer exits or is killed, without deleting the empty lock file. Values are fetched before existing outputs
+change. Replacement is atomic per file, not for the entire directory. A pending manifest retains ownership of
+both generations before output changes; retry can reconcile an interrupted update. Success is reported only
+after replacements and withdrawals finish. Retry a failed render before reloading consumers.
+
+Deployment owns startup and periodic execution, failure recovery, and controlled reload or restart so running
+processes receive rotation. Successful rendering does not prove that a process reloaded or a grant was renewed.

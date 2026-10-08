@@ -15,6 +15,9 @@
   "dependencies": {
     "age-encryption": "0.3.1"
   },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/red-cup-engineering/computer-data-services-section.git",
