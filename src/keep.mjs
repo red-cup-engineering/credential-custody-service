@@ -45,24 +45,28 @@ function commitAndPush(storeDir, message) {
 }
 
 /**
- * Keep a credential a process has just obtained. A file credential names the `path` its code reads it at; an
- * environment credential names its `variable` (in `<service>.env`). Returns where it can now be read and whether the
- * store's commit reached its origin (a push that fails leaves the commit for the next keep or a person to push).
+ * Keep a credential a process has just obtained. A file credential names the `path` its code reads it at (and, with
+ * `variable`, the variable that names that path in `<service>.env`); an environment credential names only its
+ * `variable`. A consumer already recorded for this host and service keeps its other fields. Returns where it can now
+ * be read and whether the store's commit reached its origin (a push that fails leaves the commit for the next keep
+ * or a person to push).
  */
 export async function keepCredential({ id, value, service, path, variable, kind = 'other', provider = null, purpose = null }, env = process.env) {
   if (typeof value !== 'string' || !value) throw new TypeError('keepCredential: a value is required');
-  if (!service || Boolean(path) === Boolean(variable)) throw new TypeError('keepCredential: a service and exactly one of path (a file credential) or variable');
+  if (!service || (!path && !variable)) throw new TypeError('keepCredential: a service and a path (a file credential) or a variable');
   const storeDir = need(env, 'CREDENTIALS_STORE', 'no credential store is configured for this process to keep credentials in');
   const host = need(env, 'CREDENTIALS_HOST', 'this process does not know which host it is');
   const dir = credentialsDirectory(env);
   const name = id ?? slug(`${service}.${variable ?? path}`);
-  const consumer = path ? { host, service, path: placedPath(path) } : { host, service, variable };
+  const consumer = path ? { host, service, path: placedPath(path), ...(variable ? { variable } : {}) } : { host, service, variable };
   const store = openStore(storeDir), old = store.record(name);
-  const consumers = [...(old?.consumers ?? []).filter((c) => !(c.host === host && c.service === service && (path ? c.path === path : c.variable === variable))), consumer];
+  const same = (c) => c.host === host && c.service === service && (path ? c.path === path : c.variable === variable && !c.path && !c.file);
+  const prior = old?.consumers ?? [];
+  const consumers = prior.some(same) ? prior.map((c) => (same(c) ? { ...c, ...consumer } : c)) : [...prior, consumer];
   await store.put(name, value, {
     ...(old ?? { kind, provider, purpose: purpose ?? `${variable ?? path} for ${service}` }),
     holders: [...new Set([...(old?.holders ?? []), host])], consumers,
   });
   await store.renderHost(host, dir);
-  return { id: name, host, service, ...(path ? { path: join(dir, path) } : { variable }), ...commitAndPush(storeDir, `Keep ${name} (${host}: ${service})`) };
+  return { id: name, host, service, ...(path ? { path: join(dir, path) } : {}), ...(variable ? { variable } : {}), ...commitAndPush(storeDir, `Keep ${name} (${host}: ${service})`) };
 }
