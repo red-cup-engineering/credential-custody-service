@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
-import { renderHost as renderHostCredentials } from './render-host.mjs';
+import { placedPath, renderHost as renderHostCredentials } from './render-host.mjs';
 
 export const KINDS = Object.freeze(['api-key', 'oauth-client-secret', 'oauth-refresh-token', 'token', 'password', 'passphrase', 'private-key', 'session-secret', 'other']);
 const ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
@@ -96,22 +96,34 @@ export function openStore(dir) {
     /** The environment a service runs with on a host: each consumer variable bound to its credential's value. */
     async render(host, service) {
       const lines = [];
-      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable && !c.file) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
+      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable && !c.file && !c.path) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
       return lines.sort().join('\n') + (lines.length ? '\n' : '');
     },
 
-    /** The files a service runs with on a host: each file consumer's path and its credential's value. */
-    async files(host, service) {
-      const out = [];
-      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.file) out.push({ id: rec.id, file: c.file, value: await this.get(rec.id, host) });
-      return out;
+    /**
+     * Place each of a host's file credentials where its code reads it inside the rendered directory: a consumer whose
+     * recorded file lies under `root` (the directory the code used to read from, say ~/.config/<holder>) is placed at
+     * its path relative to that root.
+     */
+    placeFiles(host, root) {
+      const base = `${root.replace(/\/+$/u, '')}/`, placed = [];
+      for (const rec of records()) {
+        let changed = false;
+        const consumers = (rec.consumers ?? []).map((c) => {
+          if (c.host !== host || !c.file || c.path || !c.file.startsWith(base)) return c;
+          changed = true; placed.push({ id: rec.id, service: c.service, path: placedPath(c.file.slice(base.length)) });
+          return { ...c, path: c.file.slice(base.length) };
+        });
+        if (changed) writeAtomic(recordPath(rec.id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
+      }
+      return placed;
     },
 
     /** Name the variable through which a service finds a file credential: render-host then binds it to the rendered file. */
     bindFile(id, { host, service, variable }) {
       const rec = record(id);
       if (!rec) throw new Error(`no credential ${id}`);
-      const consumers = rec.consumers ?? [], hit = consumers.find((c) => c.host === host && c.service === service && c.file);
+      const consumers = rec.consumers ?? [], hit = consumers.find((c) => c.host === host && c.service === service && (c.file || c.path));
       if (!hit) throw new Error(`${id} has no file consumer ${service} on ${host}`);
       hit.variable = variable;
       writeAtomic(recordPath(id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);

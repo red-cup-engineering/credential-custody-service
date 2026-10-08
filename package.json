@@ -6,7 +6,8 @@
   "exports": {
     "./store": "./src/store.mjs",
     "./package.json": "./package.json",
-    "./recipient-seal": "./src/recipient-seal.mjs"
+    "./recipient-seal": "./src/recipient-seal.mjs",
+    "./keep": "./src/keep.mjs"
   },
   "bin": {
     "credentials": "./scripts/credentials.mjs",

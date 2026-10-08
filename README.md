@@ -45,3 +45,16 @@ after replacements and withdrawals finish. Retry a failed render before reloadin
 
 Deployment owns startup and periodic execution, failure recovery, and controlled reload or restart so running
 processes receive rotation. Successful rendering does not prove that a process reloaded or a grant was renewed.
+
+## Where code finds credentials
+
+Code reads its credentials only from `CREDENTIALS_DIRECTORY` (systemd's name for a process's credentials
+directory), never from a file in a home directory: `credentialPath('kalshi.env')`,
+`credentialPath('fastmail/<account>.json')` (`@red-cup-engineering/credential-custody-service/keep`). A file
+credential renders at the relative path its code reads when its consumer records one (`path`);
+`credentials place-files --root ~/.config/<holder>` records those paths for credentials imported from such a
+directory.
+
+A credential a process obtains is kept, not written to a file of its own: `keepCredential({ service, path | variable,
+value })` seals it into the store (`CREDENTIALS_STORE`) for this host (`CREDENTIALS_HOST`), re-renders, and commits
+and pushes the store.
