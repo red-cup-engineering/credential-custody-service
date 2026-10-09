@@ -1,0 +1,9 @@
+{
+  "repository": "red-cup-engineering/computer-data-services-section",
+  "commit": "9a7943732839864c715810650c4133f767990253",
+  "path": "services/credential-custody-service/src/render-host.mjs",
+  "gitBlob": "c4356bf2ccc1152ada89fc57ec925ffcb594eab4",
+  "url": "https://github.com/red-cup-engineering/computer-data-services-section/blob/9a7943732839864c715810650c4133f767990253/services/credential-custody-service/src/render-host.mjs",
+  "purpose": "Unmodified historical renderer fixture to verify the split manifest contract when pre-placement and current renderers alternate using synthetic noncredential values only.",
+  "historicalContext": "Parent of PR33, before placed-path outputs. PR37 preserves this renderer's conventional main-manifest vocabulary. This fixture does not assert the version running on any live host."
+}
