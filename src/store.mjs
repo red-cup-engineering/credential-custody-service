@@ -73,7 +73,10 @@ export function openStore(dir) {
       const next = { id, provider: null, kind: 'other', owner: null, purpose: null, holders: [], consumers: [], rotateEveryDays: null, createdAt: now, ...old, ...fields, fingerprint: fingerprint(value), rotatedAt: old.fingerprint && old.fingerprint !== fingerprint(value) ? now : (old.rotatedAt ?? now) };
       if (!KINDS.includes(next.kind)) throw new TypeError(`kind ${next.kind} is not one of ${KINDS.join(', ')}`);
       if (!next.holders.length) throw new TypeError(`credential ${id} needs at least one holder host`);
-      writeAtomic(join(dir, 'sealed', `${id}.age`), await sealTo(value, sealFor(next.holders)));
+      const keys = sealFor(next.holders);
+      writeAtomic(join(dir, 'sealed', `${id}.age`), await sealTo(value, keys));
+      // The public recipients this value is sealed to, so a holder can see when the holders changed under it.
+      next.sealedTo = [...keys].sort();
       writeAtomic(recordPath(id), `${JSON.stringify(next, null, 2)}\n`);
       return next;
     },
@@ -84,6 +87,24 @@ export function openStore(dir) {
       if (!rec) throw new Error(`no credential ${id} in this store; ask for it with: credentials request ${id} --reason "…"`);
       if (!rec.holders.includes(host)) throw new Error(`host ${host} does not hold ${id} (holders: ${rec.holders.join(', ')})`);
       return openWith(readFileSync(join(dir, 'sealed', `${id}.age`), 'utf8'), [identity(host)]);
+    },
+
+    /**
+     * Reseal what this host holds whose holders' recipients no longer match the recipients it was sealed to: a
+     * holder granted by a reviewed edit of the registry (or a recipient replaced) can then open it after the next
+     * pull of any other holder. A record without `sealedTo` is untracked and left as it is.
+     */
+    async resealChanged(host) {
+      const resealed = [], skipped = [];
+      for (const rec of records()) {
+        if (!Array.isArray(rec.sealedTo) || !rec.holders?.includes(host)) continue;
+        let expected;
+        try { expected = [...sealFor(rec.holders)].sort(); } catch (error) { skipped.push({ id: rec.id, reason: error.message }); continue; }
+        if (expected.length === rec.sealedTo.length && expected.every((key, i) => key === rec.sealedTo[i])) continue;
+        try { await this.put(rec.id, await this.get(rec.id, host), rec); resealed.push(rec.id); }
+        catch (error) { skipped.push({ id: rec.id, reason: error.message }); }
+      }
+      return { resealed, skipped };
     },
 
     /** Reseal every credential to its current holders (after a holder or recovery recipient changes). */

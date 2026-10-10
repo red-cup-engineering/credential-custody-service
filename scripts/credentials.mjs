@@ -25,6 +25,7 @@
  *   request <id> --reason "…"       ask for a credential the store does not hold
  *   requests                         the outstanding requests
  *   reseal                           reseal every credential this host can open to its current holders
+ *   reseal-changed                   reseal only what this host holds whose holders changed since it was sealed
  *
  * An agent that needs a credential runs `get`; when the store does not hold it, `request`. It never asks a
  * person to sign in for it.
@@ -115,6 +116,7 @@ else if (command === 'put') {
   }
   out(report);
 } else if (command === 'request') out(store.request(arg ?? fail('request <id> --reason "…"'), { reason: o.reason ?? fail('--reason is required'), by: o.by ?? host ?? null }));
+else if (command === 'reseal-changed') out(await store.resealChanged(needHost()));
 else if (command === 'requests') out(store.requests().filter((r) => r.state === 'requested'));
 else if (command === 'reseal') out({ resealed: await store.reseal(needHost()) });
-else fail('usage: credentials --store <dir> --host <host> init-host|list|get|put|render|render-host|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal');
+else fail('usage: credentials --store <dir> --host <host> init-host|list|get|put|render|render-host|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal|reseal-changed');
