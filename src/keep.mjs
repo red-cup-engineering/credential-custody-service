@@ -33,7 +33,7 @@ export function credentialPath(relative, env = process.env) {
   return join(credentialsDirectory(env), envFile ? relative : placedPath(relative));
 }
 
-function commitAndPush(storeDir, message) {
+export function commitAndPush(storeDir, message) {
   const git = (...args) => spawnSync('git', ['-C', storeDir, ...args], { encoding: 'utf8', timeout: 60_000 });
   const added = git('add', '-A', '.');
   if (added.status !== 0) return { committed: false, pushed: false, reason: added.stderr.trim() };
