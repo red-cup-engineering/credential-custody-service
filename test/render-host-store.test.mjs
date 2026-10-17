@@ -34,3 +34,27 @@ test('genuine age custody reaches both original entrypoints and file bindings wi
   assert.equal(existsSync(join(runtime, 'fixture-service.env')), false);
   assert.equal(existsSync(join(runtime, 'files/fixture-file')), false);
 });
+
+test('bind gives a held credential another service without reading it, as a variable or a placed file', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-bind-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
+  const store = openStore(storePath);
+  await store.initHost(host);
+  await store.put('fixture-id', 'INERT_ID', { holders: [host], consumers: [{ host, service: 'first-service', variable: 'FIXTURE_ID' }] });
+  await store.put('fixture-key', 'INERT_KEY_FILE', { holders: [host], consumers: [{ host, service: 'first-service', path: 'keys/fixture/key.pem', variable: 'FIXTURE_KEY_PATH' }] });
+  const cli = (...args) => spawnSync(process.execPath, [new URL('../scripts/credentials.mjs', import.meta.url).pathname, '--store', storePath, '--host', host, ...args], { encoding: 'utf8' });
+  const variable = cli('bind', 'fixture-id', '--service', 'second-service', '--variable', 'SECOND_ID');
+  assert.equal(variable.status, 0, variable.stderr);
+  const file = cli('bind', 'fixture-key', '--service', 'second-service', '--variable', 'SECOND_KEY_PATH', '--path', 'keys/fixture/key.pem');
+  assert.equal(file.status, 0, file.stderr);
+  assert.equal(`${variable.stdout}${file.stdout}`.includes('INERT'), false, 'binding never returns a value');
+  const rendered = cli('render-host', '--to', runtime);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.equal(readFileSync(join(runtime, 'second-service.env'), 'utf8'), `SECOND_ID=INERT_ID\nSECOND_KEY_PATH=${join(runtime, 'keys/fixture/key.pem')}\n`);
+  assert.equal(readFileSync(join(runtime, 'first-service.env'), 'utf8'), `FIXTURE_ID=INERT_ID\nFIXTURE_KEY_PATH=${join(runtime, 'keys/fixture/key.pem')}\n`);
+  // a host the value is not sealed to cannot be bound
+  const elsewhere = spawnSync(process.execPath, [new URL('../scripts/credentials.mjs', import.meta.url).pathname, '--store', storePath, '--host', 'other-host', 'bind', 'fixture-id', '--service', 's', '--variable', 'X_ID'], { encoding: 'utf8' });
+  assert.notEqual(elsewhere.status, 0);
+  assert.match(elsewhere.stderr, /not sealed to other-host/u);
+});

@@ -140,6 +140,22 @@ export function openStore(dir) {
       return placed;
     },
 
+    /**
+     * Give a credential one more consumer on a host that already holds it, without reading its value: a service's
+     * variable (`<service>.env` then carries the value), or, with `path`, a file credential placed at `path` whose
+     * rendered location the variable names. A host the value is not sealed to cannot be bound; reseal it first.
+     */
+    bind(id, { host, service, variable, path }) {
+      const rec = record(id);
+      if (!rec) throw new Error(`no credential ${id}`);
+      if (!(rec.holders ?? []).includes(host)) throw new Error(`${id} is not sealed to ${host}: add it as a holder and reseal before binding`);
+      if (typeof service !== 'string' || !service || typeof variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(variable)) throw new TypeError('bind needs a service and an UPPER_CASE variable');
+      const consumer = { host, service, variable, ...(path === undefined ? {} : { path: placedPath(path) }) };
+      const consumers = [...(rec.consumers ?? []).filter((c) => !(c.host === host && c.service === service && c.variable === variable)), consumer];
+      writeAtomic(recordPath(id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
+      return { id, ...consumer };
+    },
+
     /** Name the variable through which a service finds a file credential: render-host then binds it to the rendered file. */
     bindFile(id, { host, service, variable }) {
       const rec = record(id);

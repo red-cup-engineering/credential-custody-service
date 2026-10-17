@@ -18,6 +18,9 @@
  *   place-files --root <dir>         place this host's file credentials where their code reads them: a consumer
  *                                    whose file lies under <dir> renders at its relative path in the runtime directory
  *   render-host --to <dir>           every service's env file and every file credential this host uses (0700/0600)
+ *   bind <id> --service <s> --variable <NAME> [--path <relative path>]
+ *                                    give a credential this host holds one more consumer: the service's variable, or
+ *                                    with --path a file credential placed there whose rendered path the variable names
  *   bind-file <id> --service <s> --variable <NAME>
  *                                    the service finds this file credential through NAME: render-host sets NAME to
  *                                    the rendered file's path in that service's env file
@@ -41,7 +44,7 @@ process.on('uncaughtException', (error) => { process.stderr.write(`credentials: 
 const { values: o, positionals: [command, arg, arg2] } = parseArgs({ allowPositionals: true, options: {
   store: { type: 'string' }, host: { type: 'string' }, holders: { type: 'string' }, kind: { type: 'string' }, provider: { type: 'string' },
   owner: { type: 'string' }, purpose: { type: 'string' }, 'rotate-days': { type: 'string' }, service: { type: 'string' }, out: { type: 'string' },
-  reason: { type: 'string' }, variable: { type: 'string' }, root: { type: 'string' }, id: { type: 'string' }, to: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+  reason: { type: 'string' }, variable: { type: 'string' }, path: { type: 'string' }, root: { type: 'string' }, id: { type: 'string' }, to: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
 } });
 const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? process.env.CREDENTIALS_HOST;
 const fail = (message) => { process.stderr.write(`${message}\n`); process.exit(2); };
@@ -99,6 +102,8 @@ else if (command === 'put') {
   out({ placed: store.placeFiles(needHost(), o.root ?? fail('place-files --root <directory the code read credentials from>')) });
 } else if (command === 'render-host') {
   out(await store.renderHost(needHost(), o.to ?? process.env.CREDENTIALS_RENDER_TO ?? fail('render-host --to <runtime dir> (or CREDENTIALS_RENDER_TO)')));
+} else if (command === 'bind') {
+  out(store.bind(arg ?? fail('bind <id> --service <s> --variable <NAME> [--path <relative path>]'), { host: needHost(), service: o.service ?? fail('--service is required'), variable: o.variable ?? fail('--variable is required'), ...(o.path ? { path: o.path } : {}) }));
 } else if (command === 'bind-file') {
   out(store.bindFile(arg ?? fail('bind-file <id> --service <s> --variable <NAME>'), { host: needHost(), service: o.service ?? fail('--service is required'), variable: o.variable ?? fail('--variable is required') }));
 } else if (command === 'rename') {
@@ -119,4 +124,4 @@ else if (command === 'put') {
 else if (command === 'reseal-changed') out(await store.resealChanged(needHost()));
 else if (command === 'requests') out(store.requests().filter((r) => r.state === 'requested'));
 else if (command === 'reseal') out({ resealed: await store.reseal(needHost()) });
-else fail('usage: credentials --store <dir> --host <host> init-host|list|get|put|render|render-host|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal|reseal-changed');
+else fail('usage: credentials --store <dir> --host <host> init-host|list|get|put|render|render-host|bind|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal|reseal-changed');
