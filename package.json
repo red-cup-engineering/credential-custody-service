@@ -21,8 +21,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/red-cup-engineering/computer-data-engineering-services-section.git",
-    "directory": "services/credential-custody-service"
+    "url": "git+https://github.com/red-cup-engineering/credential-custody-service.git"
   },
   "engines": {
     "node": ">=22"
