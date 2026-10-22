@@ -230,8 +230,17 @@ export function openStore(dir) {
     },
 
     /** Ask for a credential this store does not hold; the person who can obtain it works this list. */
-    request(id, { reason, by, consumers = [] }) {
-      const row = { at: new Date().toISOString(), id, reason, by, consumers, state: 'requested' };
+    request(id, { reason, by, consumers = [], blockedBy } = {}) {
+      // A request whose provider demands something the Group has not admitted yet (a payment card, say) is still
+      // tracked, as deferred with the condition that blocks it, so the list of what to obtain is whole while the
+      // person working it sees only what can be done now.
+      if (blockedBy !== undefined) {
+        const text = typeof blockedBy === 'string' ? blockedBy.trim() : '';
+        if (!text || text.length > DESCRIPTION_LIMIT || /[\r\n]/u.test(text)) throw new TypeError(`blocked-by must be one line of 1 to ${DESCRIPTION_LIMIT} characters`);
+        if (looksSecret(text)) throw new TypeError('blocked-by looks like a secret and was not written; name the condition, never a value');
+        blockedBy = text;
+      }
+      const row = { at: new Date().toISOString(), id, reason, by, consumers, state: blockedBy === undefined ? 'requested' : 'deferred', ...(blockedBy === undefined ? {} : { blockedBy }) };
       appendFileSync(join(dir, 'requests.jsonl'), `${JSON.stringify(row)}\n`);
       return row;
     },

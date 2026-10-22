@@ -84,3 +84,7 @@ directory.
 A credential a process obtains is kept, not written to a file of its own: `keepCredential({ service, path | variable,
 value })` seals it into the store (`CREDENTIALS_STORE`) for this host (`CREDENTIALS_HOST`), re-renders, and commits
 and pushes the store.
+
+## Deferred requests
+
+`request <id> --reason "…" --blocked-by "<condition>"` tracks a credential the Group wants but cannot obtain yet, for example a free tier that demands a payment card while the Group spends no cash. The row is written with `state: "deferred"` and `blockedBy`. `requests` lists only what can be done now; `requests --deferred` lists the deferred ones and `requests --all` lists both; `audit` reports them as `deferredRequests`. The condition is one line, never a value: secret-shaped text is refused.
