@@ -27,6 +27,25 @@ The cryptographic core (`cryptographic-data-service`) stays dependency-free; rec
 Custody only: authentication and authorization belong to the protocol and authority services that consume these
 values.
 
+## Describing a credential
+
+A registry record says what its credential is: `provider` (who issued it), `owner`, `purpose`, and the optional
+`account` (the provider account or organization it belongs to) and `plan` (the subscription or tier the account
+is on). These are descriptive text; none is a secret, and none is needed to open the value.
+
+```
+credentials … describe <id> [--provider groq] [--owner red-cup-engineering] [--purpose "…"] \
+                            [--account <account>] [--plan <plan>] [--clear <field>]…
+```
+
+`describe` rewrites only those five fields of `registry/<id>.json`, atomically. It never reads, opens or reseals
+`sealed/<id>.age`, so it runs on any host with a checkout, holder or not, and leaves holders, consumers, kind,
+fingerprint, `sealedTo` and `rotatedAt` as they were. It refuses an unknown id; a text that is shaped like a
+secret (an assignment to a secret-named variable, a PEM or age secret key, one unbroken token of 32 or more key
+characters mixing letters and digits, or text whose fingerprint equals a stored credential's); a value over 200 characters or
+spanning lines; and a call that changes nothing. `--clear` sets a field back to `null`. `list` shows provider,
+owner, account and plan.
+
 ## On a host
 
 A host's services read their credentials from a runtime directory rendered from the store, never from files kept
