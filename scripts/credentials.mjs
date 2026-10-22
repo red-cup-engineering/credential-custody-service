@@ -28,8 +28,10 @@
  *                                    the service finds this file credential through NAME: render-host sets NAME to
  *                                    the rendered file's path in that service's env file
  *   rename <from> <to>               give a credential a better id
- *   request <id> --reason "…"       ask for a credential the store does not hold
- *   requests                         the outstanding requests
+ *   request <id> --reason "…" [--blocked-by "<condition>"]
+ *                                    ask for a credential the store does not hold; with --blocked-by it is tracked as
+ *                                    deferred until that condition is admitted ("requires a card")
+ *   requests [--deferred | --all]    the outstanding requests (deferred ones only with --deferred or --all)
  *   reseal                           reseal every credential this host can open to its current holders
  *   reseal-changed                   reseal only what this host holds whose holders changed since it was sealed
  *
@@ -47,7 +49,7 @@ process.on('uncaughtException', (error) => { process.stderr.write(`credentials: 
 const { values: o, positionals: [command, arg, arg2] } = parseArgs({ allowPositionals: true, options: {
   store: { type: 'string' }, host: { type: 'string' }, holders: { type: 'string' }, kind: { type: 'string' }, provider: { type: 'string' },
   owner: { type: 'string' }, purpose: { type: 'string' }, account: { type: 'string' }, plan: { type: 'string' }, clear: { type: 'string', multiple: true }, 'rotate-days': { type: 'string' }, service: { type: 'string' }, out: { type: 'string' },
-  reason: { type: 'string' }, variable: { type: 'string' }, path: { type: 'string' }, root: { type: 'string' }, id: { type: 'string' }, to: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+  reason: { type: 'string' }, 'blocked-by': { type: 'string' }, deferred: { type: 'boolean' }, all: { type: 'boolean' }, variable: { type: 'string' }, path: { type: 'string' }, root: { type: 'string' }, id: { type: 'string' }, to: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
 } });
 const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? process.env.CREDENTIALS_HOST;
 const fail = (message) => { process.stderr.write(`${message}\n`); process.exit(2); };
@@ -114,7 +116,7 @@ else if (command === 'put') {
   out(store.rename(arg ?? fail('rename <from> <to>'), arg2 ?? fail('rename <from> <to>')));
 } else if (command === 'audit') {
   const records = store.records(), byFingerprint = new Map(records.map((r) => [r.fingerprint, r.id]));
-  const report = { credentials: records.length, overdue: records.filter((r) => r.rotateEveryDays && days(r.rotatedAt) > r.rotateEveryDays).map((r) => r.id), requests: store.requests().filter((r) => r.state === 'requested').map((r) => r.id), plaintextCopies: [], unstoredSecrets: [] };
+  const report = { credentials: records.length, overdue: records.filter((r) => r.rotateEveryDays && days(r.rotatedAt) > r.rotateEveryDays).map((r) => r.id), requests: store.requests().filter((r) => r.state === 'requested').map((r) => r.id), deferredRequests: store.requests().filter((r) => r.state === 'deferred').map((r) => `${r.id} (${r.blockedBy})`), plaintextCopies: [], unstoredSecrets: [] };
   const walk = (dir) => { let entries = []; try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return []; } return entries.flatMap((e) => (e.isDirectory() && !['node_modules', '.git'].includes(e.name) ? walk(join(dir, e.name)) : e.isFile() && /\.env(\.|$)|\.env\.[a-z0-9-]+$/u.test(e.name) ? [join(dir, e.name)] : [])); };
   for (const dir of o.scan ?? []) for (const file of walk(dir)) {
     let pairs; try { if (statSync(file).size > 1 << 20) continue; pairs = parseEnv(readFileSync(file, 'utf8')); } catch { continue; }
@@ -124,8 +126,8 @@ else if (command === 'put') {
     }
   }
   out(report);
-} else if (command === 'request') out(store.request(arg ?? fail('request <id> --reason "…"'), { reason: o.reason ?? fail('--reason is required'), by: o.by ?? host ?? null }));
+} else if (command === 'request') out(store.request(arg ?? fail('request <id> --reason "…"'), { reason: o.reason ?? fail('--reason is required'), by: o.by ?? host ?? null, ...(o['blocked-by'] === undefined ? {} : { blockedBy: o['blocked-by'] }) }));
 else if (command === 'reseal-changed') out(await store.resealChanged(needHost()));
-else if (command === 'requests') out(store.requests().filter((r) => r.state === 'requested'));
+else if (command === 'requests') out(store.requests().filter((r) => (o.all ? true : o.deferred ? r.state === 'deferred' : r.state === 'requested')));
 else if (command === 'reseal') out({ resealed: await store.reseal(needHost()) });
 else fail('usage: credentials --store <dir> --host <host> init-host|list|describe|get|put|render|render-host|bind|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal|reseal-changed');
