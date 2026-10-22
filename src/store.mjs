@@ -23,6 +23,10 @@ import { placedPath, renderHost as renderHostCredentials } from './render-host.m
 export const KINDS = Object.freeze(['api-key', 'oauth-client-secret', 'oauth-refresh-token', 'token', 'password', 'passphrase', 'private-key', 'session-secret', 'other']);
 const ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
 
+/** The registry fields that only describe a credential; `describe` may rewrite these and nothing else. */
+export const DESCRIPTIVE_FIELDS = Object.freeze(['provider', 'owner', 'purpose', 'account', 'plan']);
+const DESCRIPTION_LIMIT = 200;
+
 /** A short public fingerprint of a value: finds plaintext copies and duplicates without recording the value. */
 export const fingerprint = (value) => createHash('sha256').update(value).digest('hex').slice(0, 16);
 
@@ -176,6 +180,36 @@ export function openStore(dir) {
       return renderHostCredentials(this, host, to);
     },
 
+    /**
+     * Say what a credential is for, without touching its value: rewrite only the descriptive fields of its registry
+     * record (provider, owner, purpose, account, plan). The sealed file is never read, opened or resealed; holders,
+     * consumers, kind, fingerprint, sealedTo and rotatedAt are carried over untouched. An unknown id, a field that
+     * looks like a secret, or a request that changes nothing is refused before anything is written.
+     */
+    describe(id, fields = {}, clear = []) {
+      const rec = record(id);
+      if (!rec) throw new Error(`no credential ${id} in this store`);
+      const changes = {}, known = new Set(DESCRIPTIVE_FIELDS);
+      for (const [field, value] of Object.entries(fields)) {
+        if (value === undefined) continue;
+        if (!known.has(field)) throw new TypeError(`${field} is not a descriptive field (${DESCRIPTIVE_FIELDS.join(', ')})`);
+        const text = typeof value === 'string' ? value.trim() : '';
+        if (!text || text.length > DESCRIPTION_LIMIT || /[\r\n]/u.test(text)) throw new TypeError(`${field} must be one line of 1 to ${DESCRIPTION_LIMIT} characters`);
+        if (looksSecret(text)) throw new TypeError(`${field} looks like a secret and was not written; describe where a credential comes from, never its value`);
+        if (records().some((r) => r.fingerprint && r.fingerprint === fingerprint(text))) throw new TypeError(`${field} equals a stored credential's value and was not written`);
+        changes[field] = text;
+      }
+      for (const field of clear) {
+        if (!known.has(field)) throw new TypeError(`cannot clear ${field}: not a descriptive field (${DESCRIPTIVE_FIELDS.join(', ')})`);
+        if (field in changes) throw new TypeError(`${field} is both set and cleared`);
+        changes[field] = null;
+      }
+      if (!Object.keys(changes).length) throw new TypeError(`describe ${id} needs at least one of ${DESCRIPTIVE_FIELDS.map((f) => `--${f}`).join(', ')} or --clear <field>`);
+      const next = { ...rec, ...changes };
+      writeAtomic(recordPath(id), `${JSON.stringify(next, null, 2)}\n`);
+      return { id, ...Object.fromEntries(DESCRIPTIVE_FIELDS.map((f) => [f, next[f] ?? null])) };
+    },
+
     /** Remove a credential that is revoked or retired: its record and sealed value leave the store (git keeps history). */
     remove(id) {
       if (!record(id)) return false;
@@ -216,3 +250,11 @@ export function parseEnv(text) {
   for (const line of text.split('\n')) { const m = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=(.*)$/u.exec(line); if (m) out.push([m[1], m[2].trim().replace(/^(["'])(.*)\1$/u, '$2')]); }
   return out;
 }
+
+/**
+ * Whether descriptive text is shaped like a secret: an env assignment to a secret-named variable (`API_KEY_X=…`), a
+ * PEM or age secret key, or one long unbroken token of key characters. Names alone (`API_KEY_GROQ`) are not secrets.
+ */
+export const looksSecret = (text) => /AGE-SECRET-KEY-|-----BEGIN /u.test(text)
+  || parseEnv(text).some(([name, value]) => value && isSecretName(name))
+  || (/^[A-Za-z0-9_\-+/=.]{32,}$/u.test(text) && /[0-9]/u.test(text) && /[A-Za-z]/u.test(text));

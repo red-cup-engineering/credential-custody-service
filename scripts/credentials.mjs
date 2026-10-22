@@ -8,6 +8,9 @@
  *   list                             every credential: kind, provider, owner, holders, consumers, age
  *   get <id>                         print a credential's value (this host must hold it)
  *   put <id> --holders a,b [--kind --provider --owner --purpose --rotate-days N]   value read from stdin
+ *   describe <id> [--provider p] [--owner o] [--purpose s] [--account a] [--plan p] [--clear field]…
+ *                                    say what a credential is for: rewrites only those registry fields, never reads,
+ *                                    opens or reseals the value, and refuses an unknown id or a secret-shaped text
  *   render <service> [--out <file>]  the env file a service runs with on this host (0600), from the registry
  *   import <env-file> --service <s> [--holders a,b] [--dry-run]
  *                                    take an existing env file's secrets into the store (duplicates by fingerprint
@@ -36,14 +39,14 @@
 import { readFileSync, readdirSync, statSync, writeFileSync, chmodSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { fingerprint, isSecretName, openStore, parseEnv } from '../src/store.mjs';
+import { DESCRIPTIVE_FIELDS, fingerprint, isSecretName, openStore, parseEnv } from '../src/store.mjs';
 
 // A refusal is a sentence for the person or agent reading it, not a stack trace.
 process.on('uncaughtException', (error) => { process.stderr.write(`credentials: ${error.message}\n`); process.exit(1); });
 
 const { values: o, positionals: [command, arg, arg2] } = parseArgs({ allowPositionals: true, options: {
   store: { type: 'string' }, host: { type: 'string' }, holders: { type: 'string' }, kind: { type: 'string' }, provider: { type: 'string' },
-  owner: { type: 'string' }, purpose: { type: 'string' }, 'rotate-days': { type: 'string' }, service: { type: 'string' }, out: { type: 'string' },
+  owner: { type: 'string' }, purpose: { type: 'string' }, account: { type: 'string' }, plan: { type: 'string' }, clear: { type: 'string', multiple: true }, 'rotate-days': { type: 'string' }, service: { type: 'string' }, out: { type: 'string' },
   reason: { type: 'string' }, variable: { type: 'string' }, path: { type: 'string' }, root: { type: 'string' }, id: { type: 'string' }, to: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
 } });
 const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? process.env.CREDENTIALS_HOST;
@@ -58,7 +61,8 @@ const days = (iso) => Math.floor((Date.now() - Date.parse(iso)) / 86400000);
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9.]+/gu, '-').replace(/^-|-$/gu, '');
 
 if (command === 'init-host') out(await store.initHost(o.recovery ? (arg ?? 'recovery') : needHost(), { recovery: o.recovery }));
-else if (command === 'list') out(store.records().map((r) => ({ id: r.id, kind: r.kind, provider: r.provider, owner: r.owner, holders: r.holders, consumers: (r.consumers ?? []).map((c) => `${c.host}:${c.service}:${c.variable}`), ageDays: days(r.rotatedAt) })));
+else if (command === 'list') out(store.records().map((r) => ({ id: r.id, kind: r.kind, provider: r.provider, owner: r.owner, account: r.account ?? null, plan: r.plan ?? null, holders: r.holders, consumers: (r.consumers ?? []).map((c) => `${c.host}:${c.service}:${c.variable}`), ageDays: days(r.rotatedAt) })));
+else if (command === 'describe') out(store.describe(arg ?? fail('describe <id> [--provider p] [--owner o] [--purpose s] [--account a] [--plan p] [--clear field]'), Object.fromEntries(DESCRIPTIVE_FIELDS.map((f) => [f, o[f]])), o.clear ?? []));
 else if (command === 'get') process.stdout.write(await store.get(arg ?? fail('get <id>'), needHost()));
 else if (command === 'put') {
   if (!arg) fail('put <id> --holders a,b  (value on stdin)');
@@ -124,4 +128,4 @@ else if (command === 'put') {
 else if (command === 'reseal-changed') out(await store.resealChanged(needHost()));
 else if (command === 'requests') out(store.requests().filter((r) => r.state === 'requested'));
 else if (command === 'reseal') out({ resealed: await store.reseal(needHost()) });
-else fail('usage: credentials --store <dir> --host <host> init-host|list|get|put|render|render-host|bind|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal|reseal-changed');
+else fail('usage: credentials --store <dir> --host <host> init-host|list|describe|get|put|render|render-host|bind|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal|reseal-changed');
