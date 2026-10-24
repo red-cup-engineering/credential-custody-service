@@ -213,3 +213,27 @@ test('a consumer without any declared delivery cannot silently retire a prior se
     await assert.rejects(opened.renderHost(host, f.runtime), /registry.*damaged[.]json.*consumers/u);
   }
 });
+
+
+test('malformed file-bound variables cannot masquerade as safe file-only deliveries', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  await opened.put('inert-file-credential', 'INERT_TEST_VALUE', { holders: [host], consumers: [] });
+  const record = join(f.store, 'registry', 'inert-file-credential.json');
+  const bad = [
+    ['newline injection', { host, file: '/example/key.pem', service: 'fixture-service', variable: 'TOKEN\\nINJECTED' }],
+    ['assignment injection', { host, file: '/example/key.pem', service: 'fixture-service', variable: 'TOKEN=FORGED' }],
+    ['missing service for bound variable', { host, file: '/example/key.pem', variable: 'TOKEN_PATH' }],
+    ['unsafe service name', { host, file: '/example/key.pem', service: '../outside', variable: 'TOKEN_PATH' }],
+    ['numeric bound variable', { host, file: '/example/key.pem', service: 'fixture-service', variable: 37 }],
+    ['empty bound variable', { host, file: '/example/key.pem', service: 'fixture-service', variable: '' }],
+  ];
+  for (const [label, consumer] of bad) {
+    writeFileSync(record, JSON.stringify({ id: 'inert-file-credential', holders: [host], consumers: [consumer] }) + '\\n');
+    for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+      refuseWithoutPruning(result, f.store, f.runtime, manifest, /registry.*inert-file-credential[.]json.*consumers/u);
+    }
+    await assert.rejects(opened.renderHost(host, f.runtime), /registry.*inert-file-credential[.]json.*consumers/u, label);
+  }
+});
