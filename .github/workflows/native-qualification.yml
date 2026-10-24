@@ -48,19 +48,48 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund --registry=https://registry.561.group/ --prefix "$consumer" "${a[0]}"
           cd "$consumer"
           node --input-type=module -e "const { openStore } = await import('@red-cup-engineering/credential-custody-service/store'); if (typeof openStore !== 'function') process.exit(1)"
-          # Exercise the shipped executable against the production regression:
-          # a missing source must preserve a previously managed runtime generation.
-          mkdir -p "$consumer/live"
-          echo 'INERT_PREVIOUS_RENDER' > "$consumer/live/kept.env"
-          echo '{"version":1,"host":"fixture-host","state":"complete","outputs":["kept.env"]}' > "$consumer/live/.credential-custody-render.json"
-          cp "$consumer/live/kept.env" "$consumer/expected-kept"
-          cp "$consumer/live/.credential-custody-render.json" "$consumer/expected-manifest"
-          if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$consumer/live" \
-            ./node_modules/.bin/credentials-render-host > "$consumer/stdout" 2> "$consumer/stderr"; then
+          # Prove the installed package can produce a real prior generation, not
+          # merely refuse against a hand-written approximation of a manifest.
+          # All values are inert fixtures: no live credential or host identity.
+          installed="$consumer/node_modules/.bin"
+          valid="$consumer/valid-original"
+          live="$consumer/live"
+          "$installed/credentials" --store "$valid" --host fixture-host init-host > "$consumer/host-enrollment"
+          printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/put-result"
+          "$installed/credentials" --store "$valid" --host fixture-host \
+            --service fixture-service --variable FIXTURE_TOKEN bind fixture.token > "$consumer/bind-result"
+          CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/healthy-stdout"
+          node --input-type=module - "$consumer/healthy-stdout" "$live" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, statSync } from 'node:fs';
+          import { join } from 'node:path';
+          const [statusPath, live] = process.argv.slice(2);
+          const status = JSON.parse(readFileSync(statusPath, 'utf8'));
+          assert.equal(status.host, 'fixture-host');
+          assert.equal(status.to, live);
+          assert.deepEqual(status.services, ['fixture-service']);
+          assert.deepEqual(status.files, []);
+          const output = join(live, 'fixture-service.env');
+          assert.equal(readFileSync(output, 'utf8'), 'FIXTURE_TOKEN=INERT_FIXTURE_VALUE\\n');
+          assert.equal(statSync(output).mode & 0o077, 0, 'rendered env must be private');
+          const manifest = JSON.parse(readFileSync(join(live, '.credential-custody-render.json'), 'utf8'));
+          assert.equal(manifest.host, 'fixture-host');
+          assert.equal(manifest.state, 'complete');
+          assert.deepEqual(manifest.outputs, ['fixture-service.env']);
+          NODE
+
+          # The exact same genuinely installed executable must now refuse a
+          # missing selected source without withdrawing that healthy generation.
+          cp "$live/fixture-service.env" "$consumer/expected-kept"
+          cp "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/stdout" 2> "$consumer/stderr"; then
             echo "Packaged renderer admitted missing credential source" >&2
             exit 1
           fi
           [[ ! -e "$consumer/missing-original" && ! -s "$consumer/stdout" ]]
-          cmp -- "$consumer/live/kept.env" "$consumer/expected-kept"
-          cmp -- "$consumer/live/.credential-custody-render.json" "$consumer/expected-manifest"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
           grep -Fq -- "$consumer/missing-original" "$consumer/stderr"
