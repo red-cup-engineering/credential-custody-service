@@ -1,0 +1,105 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { openStore } from '../src/store.mjs';
+
+const host = 'fixture-host';
+const script = new URL('../scripts/render-host.mjs', import.meta.url).pathname;
+const cli = new URL('../scripts/credentials.mjs', import.meta.url).pathname;
+const fixture = t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-source-refusal-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  return { root, store: join(root, 'source'), runtime: join(root, 'runtime') };
+};
+const runUnit = (store, runtime, selectedHost = host, pull = '0') =>
+  spawnSync(process.execPath, [script], {
+    encoding: 'utf8',
+    env: { ...process.env, CREDENTIALS_STORE: store, CREDENTIALS_HOST: selectedHost, CREDENTIALS_RENDER_TO: runtime, CREDENTIALS_PULL: pull },
+  });
+const runCli = (store, runtime, selectedHost = host, command = 'render-host') =>
+  spawnSync(process.execPath, [cli, '--store', store, '--host', selectedHost, command, ...(command === 'render-host' ? ['--to', runtime] : ['example-service'])], { encoding: 'utf8' });
+
+function seedLiveOutput(runtime) {
+  mkdirSync(runtime, { recursive: true });
+  writeFileSync(join(runtime, 'kept.env'), 'PREVIOUSLY_RENDERED_INERT_VALUE\n', { mode: 0o600 });
+  const manifest = JSON.stringify({ version: 1, host, state: 'complete', outputs: ['kept.env'] });
+  writeFileSync(join(runtime, '.credential-custody-render.json'), manifest);
+  return manifest;
+}
+
+function refuseWithoutPruning(result, store, runtime, manifest, expected) {
+  assert.notEqual(result.status, 0, 'failed source admission must exit nonzero');
+  assert.equal(result.stdout, '', 'do not report an empty render as successful');
+  assert.ok(result.stderr.includes(store), 'diagnostic must identify the original selected store');
+  assert.match(result.stderr, expected);
+  assert.equal(readFileSync(join(runtime, 'kept.env'), 'utf8'), 'PREVIOUSLY_RENDERED_INERT_VALUE\n');
+  assert.equal(readFileSync(join(runtime, '.credential-custody-render.json'), 'utf8'), manifest);
+}
+
+test('standalone host unit never creates a missing store or prunes a live render after failed pull', t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  for (const pull of ['0', '1']) {
+    const run = runUnit(f.store, f.runtime, host, pull);
+    refuseWithoutPruning(run, f.store, f.runtime, manifest, /unavailable/u);
+    assert.equal(existsSync(f.store), false, 'rendering cannot fabricate a new empty store');
+  }
+});
+
+test('both CLI rendering paths fail closed on absent source and do not fabricate it', t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  for (const command of ['render-host', 'render']) {
+    refuseWithoutPruning(runCli(f.store, f.runtime, host, command), f.store, f.runtime, manifest, /unavailable/u);
+    assert.equal(existsSync(f.store), false);
+  }
+});
+
+test('direct store entrypoints do not demote missing source into a valid empty store', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store, { create: false });
+  await assert.rejects(opened.render(host, 'example-service'), /credential store.*unavailable/u);
+  await assert.rejects(opened.renderHost(host, f.runtime), /credential store.*unavailable/u);
+  assert.equal(existsSync(f.store), false);
+  assert.equal(readFileSync(join(f.runtime, '.credential-custody-render.json'), 'utf8'), manifest);
+});
+
+test('missing sealed, registry, host identity and recipients never withdraw a previous render', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  const identityPath = join(f.store, 'hosts', host + '.identity');
+  const identity = readFileSync(identityPath, 'utf8');
+  const recipientsPath = join(f.store, 'recipients.json');
+  const recipients = readFileSync(recipientsPath, 'utf8');
+  const cases = [
+    { path: join(f.store, 'sealed'), dir: true, expected: /sealed.*ENOENT/u },
+    { path: join(f.store, 'registry'), dir: true, expected: /registry.*ENOENT/u },
+    { path: identityPath, restore: identity, expected: /identity.*ENOENT/u },
+    { path: recipientsPath, restore: recipients, expected: /recipients.*ENOENT/u },
+  ];
+  for (const entry of cases) {
+    rmSync(entry.path, { recursive: Boolean(entry.dir), force: true });
+    refuseWithoutPruning(runUnit(f.store, f.runtime), f.store, f.runtime, manifest, entry.expected);
+    refuseWithoutPruning(runCli(f.store, f.runtime), f.store, f.runtime, manifest, entry.expected);
+    if (entry.dir) {
+      assert.equal(existsSync(entry.path), false, 'render command may not rebuild missing source directories');
+      mkdirSync(entry.path);
+    } else {
+      assert.equal(existsSync(entry.path), false, 'render command may not recreate source identity');
+      writeFileSync(entry.path, entry.restore, { mode: 0o600 });
+    }
+  }
+  const wrongHost = runUnit(f.store, f.runtime, 'other-host');
+  refuseWithoutPruning(wrongHost, f.store, f.runtime, manifest, /other-host.*identity.*ENOENT/u);
+  writeFileSync(recipientsPath, '{malformed json');
+  refuseWithoutPruning(runUnit(f.store, f.runtime), f.store, f.runtime, manifest, /cannot read recipients/u);
+  writeFileSync(recipientsPath, recipients);
+  writeFileSync(identityPath, 'INVALID_HOST_IDENTITY\n', { mode: 0o600 });
+  refuseWithoutPruning(runUnit(f.store, f.runtime), f.store, f.runtime, manifest, /invalid host identity/u);
+  writeFileSync(identityPath, identity, { mode: 0o600 });
+  const healthy = runUnit(f.store, join(f.root, 'empty-valid-runtime'));
+  assert.equal(healthy.status, 0, healthy.stderr);
+  assert.deepEqual(JSON.parse(healthy.stdout).services, [], 'an authenticated empty store is legitimately empty');
+});
