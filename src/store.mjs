@@ -70,6 +70,12 @@ export function openStore(dir, { create = true } = {}) {
     if ((statSync(path).mode & 0o077) !== 0) throw new Error(`${path} is readable by others; chmod 600 it`);
     return readFileSync(path, 'utf8').trim();
   }
+  // Validate every source-declared host with the same admission rules as
+  // private identities. Invalid host claims otherwise look like a valid but
+  // unrelated consumer roster and can authorize pruning healthy outputs.
+  const validSourceHost = value => {
+    try { assertCredentialHost(value); return true; } catch { return false; }
+  };
   // A listed record is part of the source's custody evidence. Missing or
   // malformed holder/consumer arrays cannot silently mean "no consumers":
   // doing so authorizes withdrawal of previously healthy runtime credentials.
@@ -77,7 +83,7 @@ export function openStore(dir, { create = true } = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || value.id !== id) {
       throw new TypeError(`credential registry entry ${path} id mismatch or invalid record`);
     }
-    if (!Array.isArray(value.holders) || value.holders.length === 0 || value.holders.some((holder) => typeof holder !== 'string' || !holder)) {
+    if (!Array.isArray(value.holders) || value.holders.length === 0 || value.holders.some((holder) => !validSourceHost(holder))) {
       throw new TypeError(`credential registry entry ${path} holders must be a list of hosts`);
     }
     // A host label alone does not declare any renderable delivery. Earlier
@@ -87,7 +93,7 @@ export function openStore(dir, { create = true } = {}) {
     // consumer must supply both a service and a valid assignment name.
     const delivers = (consumer) => {
       if (!consumer || typeof consumer !== 'object' || Array.isArray(consumer)
-        || typeof consumer.host !== 'string' || !consumer.host) return false;
+        || !validSourceHost(consumer.host)) return false;
       // A file consumer must not bypass the variable/service checks: the
       // renderer writes file bindings into env files, so a newline, assignment,
       // missing service, or unsafe service name is a source-integrity failure.
