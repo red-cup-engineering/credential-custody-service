@@ -122,7 +122,7 @@ function acquireLock(path) {
 export async function renderHost(store, host, dir) {
   if (!host || !dir) throw new TypeError('host and runtime directory are required');
   // A file credential renders where its consumer reads it (`path`), or else to files/<id>.
-  const services = new Map(), fileOutputs = new Map();
+  const services = new Map(), fileOutputs = new Map(), claimedEnvironmentVariables = new Map();
   for (const rec of store.records()) for (const consumer of rec.consumers ?? []) if (consumer.host === host) {
     const isFile = Boolean(consumer.file || consumer.path);
     let output;
@@ -134,6 +134,16 @@ export async function renderHost(store, host, dir) {
     }
     if (consumer.variable) {
       const service = serviceName(consumer.service);
+      // Every service variable has exactly one custody source. Otherwise
+      // systemd's last-assignment-wins behavior silently selects a different
+      // credential or file path, even though the registry is well formed.
+      // This must fail before creating a render directory or touching manifests.
+      const claimed = claimedEnvironmentVariables.get(service) ?? new Set();
+      if (claimed.has(consumer.variable)) {
+        throw new Error(`duplicate environment binding ${consumer.variable} for service ${service}`);
+      }
+      claimed.add(consumer.variable);
+      claimedEnvironmentVariables.set(service, claimed);
       const paths = services.get(service) ?? [];
       if (isFile) paths.push(environmentAssignment(consumer.variable, join(dir, output)));
       services.set(service, paths);
