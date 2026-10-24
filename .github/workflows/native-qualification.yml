@@ -154,6 +154,21 @@ jobs:
           cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
           rm -- "$valid/registry/wrong-name.json"
 
+          # A registry record with no holders is not producible by the original
+          # credential put contract. Refuse rather than interpreting it as
+          # permission to retire previously healthy managed outputs.
+          printf '%s\\n' '{"id":"zero-holders","holders":[],"consumers":[]}' > "$valid/registry/zero-holders.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \\
+            "$installed/credentials-render-host" > "$consumer/zero-holders-stdout" 2> "$consumer/zero-holders-stderr"; then
+            echo "Packaged renderer admitted a zero-holder registry record" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/zero-holders-stdout" ]]
+          grep -Eq 'registry/zero-holders[.]json.*holders' "$consumer/zero-holders-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          rm -- "$valid/registry/zero-holders.json"
+
           if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
             "$installed/credentials-render-host" > "$consumer/stdout" 2> "$consumer/stderr"; then
             echo "Packaged renderer admitted missing credential source" >&2
