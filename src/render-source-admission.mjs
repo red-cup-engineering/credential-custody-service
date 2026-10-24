@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { recipientOf } from './recipient-seal.mjs';
 
 /** Refuse incomplete or misselected source custody before any runtime output or reseal. */
-export function assertRenderableStore(dir, host) {
+export async function assertRenderableStore(dir, host) {
   if (typeof dir !== 'string' || !dir) throw new TypeError('credential store directory is required for rendering');
   if (typeof host !== 'string' || !host || host === '.' || host === '..' || /[/\\\u0000-\u001f\u007f]/u.test(host)) {
     throw new TypeError(`invalid credential host for store ${JSON.stringify(dir)}`);
@@ -37,7 +37,7 @@ export function assertRenderableStore(dir, host) {
   // A syntactically plausible but unrelated source can otherwise authorize a
   // zero-credential render and withdraw existing files under the wrong key.
   let derivedRecipient;
-  try { derivedRecipient = recipientOf(identity); }
+  try { derivedRecipient = await recipientOf(identity); }
   catch (error) { throw new Error(`${context} unavailable: invalid host identity at ${identityFile}`, { cause: error }); }
   if (derivedRecipient !== recipients.hosts[host]) {
     throw new Error(`${context} unavailable: host identity and recipient mismatch in ${recipientsFile}`);
