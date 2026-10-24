@@ -61,6 +61,21 @@ export function openStore(dir, { create = true } = {}) {
   }
   const recipientsPath = join(dir, 'recipients.json');
   const recipients = () => readJson(recipientsPath, { hosts: {}, recovery: [] });
+  // A partial recipients registry is evidence of interrupted custody, not
+  // an empty enrollment ledger. Admit its shape *before* minting any identity
+  // so failed enrollment cannot leave a new unregistered private key behind.
+  // The older hosts-only document remains readable (recovery is optional).
+  const enrollmentRecipients = () => {
+    const value = recipients();
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || !value.hosts || typeof value.hosts !== 'object' || Array.isArray(value.hosts)
+        || (value.recovery !== undefined
+          && (!Array.isArray(value.recovery)
+            || value.recovery.some(key => typeof key !== 'string' || !/^age1[0-9a-z]+$/u.test(key))))) {
+      throw new TypeError(`recipients custody registry ${recipientsPath} has an invalid shape; reconcile original registration`);
+    }
+    return value;
+  };
   const recordPath = (id) => { if (!ID.test(id)) throw new TypeError(`credential id ${id} must be lowercase letters, digits, dots and dashes`); return join(dir, 'registry', `${id}.json`); };
   const identityPath = (host) => join(dir, 'hosts', `${assertCredentialHost(host)}.identity`);
 
@@ -229,7 +244,7 @@ export function openStore(dir, { create = true } = {}) {
     async initHost(host, { recovery = false } = {}) {
       // identityPath already validates via the shared admission contract.
       const path = identityPath(host);
-      const prior = recipients();
+      const prior = enrollmentRecipients();
       // existsSync follows symlinks and reports a dangling identity link as
       // missing. That link may be evidence of interrupted or externally mounted
       // private custody; never silently replace it with a fresh identity.
@@ -249,6 +264,12 @@ export function openStore(dir, { create = true } = {}) {
         throw new Error(`host ${host} has a recipient but no local identity; repair custody explicitly`);
       }
       const id = await generateIdentity(), recipient = await recipientOf(id);
+      // Recheck after asynchronous generation and before publishing private
+      // custody: another writer or a malformed registration may have appeared.
+      const r = enrollmentRecipients();
+      if (Object.hasOwn(r.hosts, host)) {
+        throw new Error(`host ${host} has a recipient but no local identity; repair custody explicitly`);
+      }
       // A concurrent writer can create the name after lstat. Publish only
       // into an unoccupied name, without replacing any prior custody evidence.
       try { writeAtomic(path, `${id}\n`, 0o600, { exclusive: true }); }
@@ -256,7 +277,6 @@ export function openStore(dir, { create = true } = {}) {
         if (error.code === 'EEXIST') throw new Error(`host ${host} identity custody at ${path} already exists; reconcile explicitly`, { cause: error });
         throw error;
       }
-      const r = recipients();
       if (recovery) r.recovery = [...new Set([...(r.recovery ?? []), recipient])]; else r.hosts[host] = recipient;
       writeAtomic(recipientsPath, `${JSON.stringify(r, null, 2)}\n`);
       return { host, recipient, created: true, recovery };
