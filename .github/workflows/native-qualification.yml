@@ -95,6 +95,28 @@ jobs:
           cp "$live/fixture-service.env" "$consumer/expected-kept"
           cp "$live/.credential-custody-render.json" "$consumer/expected-manifest"
 
+          # Installed-consumer security: a sealed multiline env value may
+          # contain another EnvironmentFile assignment. It must fail before
+          # replacing any prior managed output; file-bound multiline secrets
+          # are covered separately by the native suite.
+          printf 'INERT_NEW_VALUE\\nINJECTED_ROLE=admin' | "$installed/credentials" --store "$valid" --host fixture-host \\
+            --holders fixture-host --kind token put fixture.token > "$consumer/unsafe-put"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \\
+            "$installed/credentials-render-host" > "$consumer/injected-stdout" 2> "$consumer/injected-stderr"; then
+            echo "Installed renderer admitted injected environment assignment from a sealed value" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/injected-stdout" ]]
+          grep -Eq 'environment credential.*single-line' "$consumer/injected-stderr"
+          if grep -Fq -- 'INJECTED_ROLE=admin' "$consumer/injected-stderr"; then
+            echo "Installed renderer leaked credential content in diagnostics" >&2
+            exit 1
+          fi
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \\
+            --holders fixture-host --kind token put fixture.token > "$consumer/restore-put"
+
           # A complete-looking, identity-valid source with unreadable sealed/
           # must not be treated as an intentionally empty authorized source.
           # This uses the genuinely packed-and-installed executable.
