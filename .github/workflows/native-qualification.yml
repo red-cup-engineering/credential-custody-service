@@ -220,6 +220,34 @@ jobs:
           cp "$live/fixture-service.env" "$consumer/expected-kept"
           cp "$live/.credential-custody-render.json" "$consumer/expected-manifest"
 
+          # A sealed payload without its corresponding registry claim remains
+          # unresolved custody, not proof of an intentionally empty host. The
+          # exact freshly installed consumer must refuse and preserve its
+          # previously rendered output even when the host identity is valid.
+          orphan_seal="$valid/sealed/unregistered.age"
+          printf 'INERT_ORPHANED_SEALED_CUSTODY' > "$orphan_seal"
+          for orphan_shape in ciphertext dangling-link; do
+            if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+              "$installed/credentials-render-host" > "$consumer/orphan-render-stdout" 2> "$consumer/orphan-render-stderr"; then
+              echo "Installed renderer admitted unregistered sealed custody ($orphan_shape)" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/orphan-render-stdout" ]]
+            grep -Fq -- 'no registry entry' "$consumer/orphan-render-stderr"
+            grep -Fq -- "$orphan_seal" "$consumer/orphan-render-stderr"
+            ! grep -Fq -- 'INERT_ORPHANED_SEALED_CUSTODY' "$consumer/orphan-render-stderr"
+            cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+            cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+            if [[ "$orphan_shape" == ciphertext ]]; then
+              [[ "$(cat "$orphan_seal")" == INERT_ORPHANED_SEALED_CUSTODY ]]
+              rm -- "$orphan_seal"
+              ln -s "$consumer/missing-orphan-target" "$orphan_seal"
+            else
+              [[ -L "$orphan_seal" && ! -e "$consumer/missing-orphan-target" ]]
+            fi
+          done
+          rm -- "$orphan_seal"
+
           # Installed producer must refuse conflicting assignments without
           # changing either the existing sealed value or its registry record.
           # Separately, an externally corrupted registry must still fail closed
