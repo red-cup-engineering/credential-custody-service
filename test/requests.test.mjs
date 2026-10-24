@@ -150,3 +150,30 @@ test('a corrupt existing request backlog refuses subsequent append without a fal
   assert.equal(received.id, 'later.need');
   assert.deepEqual(store.requests().map(row => row.id), ['prior.need', 'later.need']);
 });
+
+
+test('an unterminated but parseable request row is incomplete custody, not permission to append', t => {
+  const { dir, store } = fixture(t), path = join(dir, 'requests.jsonl');
+  store.request('first.need', { reason: 'original accepted Work', by: 'host-a' });
+  const valid = readFileSync(path, 'utf8');
+  assert.equal(valid.endsWith('\\n'), true, 'the original producer terminates each JSONL row');
+  writeFileSync(path, valid.slice(0, -1));
+  const interrupted = readFileSync(path);
+  assert.throws(() => store.requests(), /credential requests.*(unterminated|newline|incomplete)/iu,
+    'a complete JSON value without its append terminator may have been interrupted');
+  for (const action of [['requests', '--all'], ['audit'], ['request', 'second.need', '--reason', 'still required', '--by', 'host-b']]) {
+    const refused = cli(dir, ...action);
+    assert.notEqual(refused.status, 0, 'the original backlog is not safe to receive Work');
+    assert.equal(refused.stdout, '', 'do not fabricate a successful read or append receipt');
+    assert.equal(refused.stderr.includes('original accepted Work'), false);
+    assert.deepEqual(readFileSync(path), interrupted, 'no failed reader or producer may change custody');
+  }
+  assert.throws(() => store.request('second.need', { reason: 'still required', by: 'host-b' }),
+    /credential requests.*(unterminated|newline|incomplete)/iu);
+  assert.deepEqual(readFileSync(path), interrupted);
+  writeFileSync(path, valid);
+  assert.deepEqual(store.requests().map(row => row.id), ['first.need']);
+  assert.equal(store.request('second.need', { reason: 'still required', by: 'host-b' }).id, 'second.need');
+  assert.deepEqual(store.requests().map(row => row.id), ['first.need', 'second.need'],
+    'complete source recovery admits both original and later demand without lost Work');
+});
