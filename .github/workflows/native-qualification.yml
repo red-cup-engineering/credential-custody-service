@@ -65,6 +65,47 @@ jobs:
           assert.match(first.recipient, /^age1[0-9a-z]+$/u);
           assert.equal(again.recipient, first.recipient, 'repeat enrollment must return public recipient, never an unresolved Promise');
           NODE
+          # This installed binary must reject path-shaped and malformed host
+          # labels before touching recipients or escaping the private host dir.
+          printf '%s' 'INERT_KEEP' > "$consumer/escaped.identity"
+          cp "$valid/recipients.json" "$consumer/enrollment-recipients"
+          for bad_host in '../../escaped' '../escaped' 'bad/host' 'bad host'; do
+            if "$installed/credentials" --store "$valid" --host "$bad_host" init-host > "$consumer/bad-host-stdout" 2> "$consumer/bad-host-stderr"; then
+              echo "Installed enrollment accepted invalid host label" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/bad-host-stdout" ]]
+            grep -Fq 'invalid credential host' "$consumer/bad-host-stderr"
+            [[ "$(cat "$consumer/escaped.identity")" == INERT_KEEP ]]
+            cmp -- "$valid/recipients.json" "$consumer/enrollment-recipients"
+          done
+
+          # An interrupted or contradictory enrollment is a refusal, never
+          # another freshly minted identity or a false successful repeat.
+          interrupted="$consumer/interrupted-enrollment"
+          mkdir -p "$interrupted/hosts"
+          cp "$valid/hosts/fixture-host.identity" "$interrupted/hosts/fixture-host.identity"
+          if "$installed/credentials" --store "$interrupted" --host fixture-host init-host > "$consumer/interrupted-stdout" 2> "$consumer/interrupted-stderr"; then
+            echo "Installed enrollment accepted unregistered private identity" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/interrupted-stdout" ]]
+          grep -Fq 'custody mismatch' "$consumer/interrupted-stderr"
+          [[ ! -e "$interrupted/recipients.json" ]]
+          cmp -- "$interrupted/hosts/fixture-host.identity" "$valid/hosts/fixture-host.identity"
+
+          orphaned="$consumer/orphaned-enrollment"
+          mkdir -p "$orphaned"
+          cp "$valid/recipients.json" "$orphaned/recipients.json"
+          if "$installed/credentials" --store "$orphaned" --host fixture-host init-host > "$consumer/orphaned-stdout" 2> "$consumer/orphaned-stderr"; then
+            echo "Installed enrollment rotated a missing private identity" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/orphaned-stdout" ]]
+          grep -Fq 'no local identity' "$consumer/orphaned-stderr"
+          [[ ! -e "$orphaned/hosts/fixture-host.identity" ]]
+          cmp -- "$orphaned/recipients.json" "$valid/recipients.json"
+
           printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
             --holders fixture-host --kind token put fixture.token > "$consumer/put-result"
           "$installed/credentials" --store "$valid" --host fixture-host \
