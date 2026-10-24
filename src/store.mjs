@@ -116,25 +116,40 @@ export function openStore(dir, { create = true } = {}) {
   };
   // Once a registry entry has been enumerated it must be read successfully:
   // a vanished or malformed entry must never be mistaken for empty custody.
-  const records = () => readdirSync(join(dir, 'registry')).filter((f) => f.endsWith('.json')).map((f) => {
-    const path = join(dir, 'registry', f), filenameId = f.slice(0, -'.json'.length);
-    const value = JSON.parse(readFileSync(path, 'utf8'));
-    if (!ID.test(filenameId)) throw new TypeError(`credential registry entry ${path} has invalid filename id`);
-    const admitted = requireRecord(path, filenameId, value);
-    // A declared record without its sealed payload is incomplete custody,
-    // not permission to retire previous host outputs. Check even records with
-    // no consumers or with holders other than the currently rendered host.
-    const sealedPath = join(dir, 'sealed', `${filenameId}.age`);
-    let sealed;
-    try { sealed = lstatSync(sealedPath); }
-    catch (error) {
-      throw new Error(`credential sealed source ${sealedPath} unavailable (${error.code ?? 'cannot inspect'})`, { cause: error });
+  const records = () => {
+    const registryNames = readdirSync(join(dir, 'registry')).filter((f) => f.endsWith('.json'));
+    // A sealed value left by interrupted registry maintenance is still custody
+    // evidence. A missing corresponding record cannot mean "zero credentials":
+    // that mistaken inference previously withdrew a healthy runtime generation.
+    // Inspect the actual sealed directory entries, including dangling links,
+    // before treating this store as complete or considering any pruning.
+    const declaredSeals = new Set(registryNames.map((f) => `${f.slice(0, -'.json'.length)}.age`));
+    for (const name of readdirSync(join(dir, 'sealed'))) {
+      if (name.endsWith('.age') && !declaredSeals.has(name)) {
+        const orphan = join(dir, 'sealed', name);
+        throw new Error(`credential sealed source ${orphan} has no registry entry; incomplete custody requires reconciliation`);
+      }
     }
-    if (!sealed.isFile() || sealed.size === 0 || !(sealed.mode & 0o444)) {
-      throw new Error(`credential sealed source ${sealedPath} unavailable (not a readable nonempty regular file)`);
-    }
-    return admitted;
-  });
+    return registryNames.map((f) => {
+      const path = join(dir, 'registry', f), filenameId = f.slice(0, -'.json'.length);
+      const value = JSON.parse(readFileSync(path, 'utf8'));
+      if (!ID.test(filenameId)) throw new TypeError(`credential registry entry ${path} has invalid filename id`);
+      const admitted = requireRecord(path, filenameId, value);
+      // A declared record without its sealed payload is incomplete custody,
+      // not permission to retire previous host outputs. Check even records with
+      // no consumers or with holders other than the currently rendered host.
+      const sealedPath = join(dir, 'sealed', `${filenameId}.age`);
+      let sealed;
+      try { sealed = lstatSync(sealedPath); }
+      catch (error) {
+        throw new Error(`credential sealed source ${sealedPath} unavailable (${error.code ?? 'cannot inspect'})`, { cause: error });
+      }
+      if (!sealed.isFile() || sealed.size === 0 || !(sealed.mode & 0o444)) {
+        throw new Error(`credential sealed source ${sealedPath} unavailable (not a readable nonempty regular file)`);
+      }
+      return admitted;
+    });
+  };
   // Refuse authoring a source that will later fail rendering. Compare the
   // exact host/service/variable claims of the candidate against all other
   // records, but allow a damaged record to be repaired by replacing its own
