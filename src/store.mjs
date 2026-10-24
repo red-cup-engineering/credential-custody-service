@@ -129,7 +129,10 @@ export function openStore(dir, { create = true } = {}) {
       const now = new Date().toISOString(), old = record(id) ?? {};
       const next = { id, provider: null, kind: 'other', owner: null, purpose: null, holders: [], consumers: [], rotateEveryDays: null, createdAt: now, ...old, ...fields, fingerprint: fingerprint(value), rotatedAt: old.fingerprint && old.fingerprint !== fingerprint(value) ? now : (old.rotatedAt ?? now) };
       if (!KINDS.includes(next.kind)) throw new TypeError(`kind ${next.kind} is not one of ${KINDS.join(', ')}`);
-      if (!next.holders.length) throw new TypeError(`credential ${id} needs at least one holder host`);
+      if (!Array.isArray(next.holders) || !next.holders.length) throw new TypeError(`credential ${id} needs at least one holder host`);
+      // A writer must never mint source records that the renderer then refuses.
+      // Admit the complete record BEFORE sealing/replacing a valid earlier value.
+      requireRecord(recordPath(id), id, next);
       const keys = sealFor(next.holders);
       writeAtomic(join(dir, 'sealed', `${id}.age`), await sealTo(value, keys));
       // The public recipients this value is sealed to, so a holder can see when the holders changed under it.
@@ -219,6 +222,8 @@ export function openStore(dir, { create = true } = {}) {
       if (!rec) throw new Error(`no credential ${id}`);
       if (!(rec.holders ?? []).includes(host)) throw new Error(`${id} is not sealed to ${host}: add it as a holder and reseal before binding`);
       if (typeof service !== 'string' || !service || typeof variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(variable)) throw new TypeError('bind needs a service and an UPPER_CASE variable');
+      // A syntactically valid env variable cannot make an unsafe output filename safe.
+      serviceName(service);
       const consumer = { host, service, variable, ...(path === undefined ? {} : { path: placedPath(path) }) };
       const consumers = [...(rec.consumers ?? []).filter((c) => !(c.host === host && c.service === service && c.variable === variable)), consumer];
       writeAtomic(recordPath(id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
@@ -229,6 +234,11 @@ export function openStore(dir, { create = true } = {}) {
     bindFile(id, { host, service, variable }) {
       const rec = record(id);
       if (!rec) throw new Error(`no credential ${id}`);
+      // File-path binding is still a host-bound credential grant; refuse
+      // forged env assignment names and unheld hosts before changing custody.
+      if (!rec.holders.includes(host)) throw new Error(`${id} is not sealed to ${host}: add it as a holder and reseal before binding`);
+      if (typeof variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(variable)) throw new TypeError('bindFile needs an UPPER_CASE variable');
+      serviceName(service);
       const consumers = rec.consumers ?? [], hit = consumers.find((c) => c.host === host && c.service === service && (c.file || c.path));
       if (!hit) throw new Error(`${id} has no file consumer ${service} on ${host}`);
       hit.variable = variable;
