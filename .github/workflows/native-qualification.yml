@@ -82,6 +82,43 @@ jobs:
           [[ -s "$staging/sealed/fixture.token.age" ]]
           [[ -s "$staging/registry/fixture.token.json" ]]
 
+          # Independent installed-producer check: a recorded ID still requires
+          # actual sealed source evidence before rotation. A linked, dangling,
+          # or missing seal must never be silently repaired by an ordinary put.
+          cp -- "$staging/registry/fixture.token.json" "$consumer/rotation-before-registry"
+          cp -- "$staging/sealed/fixture.token.age" "$consumer/rotation-before-seal"
+          rm -- "$staging/sealed/fixture.token.age"
+          for state in resolved-link dangling-link absent; do
+            if [[ "$state" == resolved-link ]]; then
+              ln -s "$consumer/staging-guard" "$staging/sealed/fixture.token.age"
+            elif [[ "$state" == dangling-link ]]; then
+              ln -s "$consumer/unresolved-ciphertext" "$staging/sealed/fixture.token.age"
+            fi
+            if printf 'INERT_WRONG_ROTATION' | "$installed/credentials" --store "$staging" --host staging-host \
+              --holders staging-host --kind token put fixture.token > "$consumer/rotation-refused-stdout" 2> "$consumer/rotation-refused-stderr"; then
+              echo "Installed rotation accepted unresolved sealed custody ($state)" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/rotation-refused-stdout" ]]
+            grep -Fq 'sealed credential source' "$consumer/rotation-refused-stderr"
+            cmp -- "$staging/registry/fixture.token.json" "$consumer/rotation-before-registry"
+            if [[ "$state" == resolved-link ]]; then
+              [[ -L "$staging/sealed/fixture.token.age" ]]
+              [[ "$(cat "$consumer/staging-guard")" == INERT_STAGING_GUARD ]]
+            elif [[ "$state" == dangling-link ]]; then
+              [[ -L "$staging/sealed/fixture.token.age" ]]
+              [[ ! -e "$consumer/unresolved-ciphertext" ]]
+            else
+              [[ ! -e "$staging/sealed/fixture.token.age" ]]
+            fi
+            if [[ "$state" != absent ]]; then rm -- "$staging/sealed/fixture.token.age"; fi
+          done
+          cp -- "$consumer/rotation-before-seal" "$staging/sealed/fixture.token.age"
+          printf 'INERT_STAGING_VALUE' | "$installed/credentials" --store "$staging" --host staging-host \
+            --holders staging-host --kind token put fixture.token > "$consumer/rotation-valid"
+          "$installed/credentials" --store "$staging" --host staging-host get fixture.token > "$consumer/rotation-open"
+          [[ "$(cat "$consumer/rotation-open")" == INERT_STAGING_VALUE ]]
+
           # The freshly installed put producer must not equate a missing
           # registry entry with permission to overwrite orphaned ciphertext
           # (including dangling symlinks left by interrupted custody).
