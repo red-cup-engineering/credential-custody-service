@@ -303,3 +303,24 @@ test('bindFile refuses forged assignments and unheld host grants without source 
   assert.throws(() => opened.bindFile('unheld', { host: 'other-host', service: 'fixture-service', variable: 'FILE_PATH' }), /not sealed|not held|holder/u);
   assert.equal(readFileSync(unheldRecord, 'utf8'), before);
 });
+
+
+test('missing sealed payload for a complete zero-consumer record must not retire live output', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  await opened.put('registered-but-unsealed', 'INERT_FIXTURE_PAYLOAD', { holders: [host], consumers: [] });
+  const sealed = join(f.store, 'sealed', 'registered-but-unsealed.age');
+  const original = readFileSync(sealed, 'utf8');
+  rmSync(sealed);
+  for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+    refuseWithoutPruning(result, f.store, f.runtime, manifest, /sealed.*registered-but-unsealed[.]age|ENOENT/u);
+  }
+  await assert.rejects(opened.renderHost(host, f.runtime), /registered-but-unsealed[.]age|ENOENT/u);
+  assert.equal(readFileSync(join(f.runtime, 'kept.env'), 'utf8'), 'PREVIOUSLY_RENDERED_INERT_VALUE\n');
+  assert.equal(readFileSync(join(f.runtime, '.credential-custody-render.json'), 'utf8'), manifest);
+  writeFileSync(sealed, original);
+  const healthy = runUnit(f.store, join(f.root, 'verified-complete-zero-consumer'));
+  assert.equal(healthy.status, 0, healthy.stderr);
+  assert.deepEqual(JSON.parse(healthy.stdout).services, []);
+});
