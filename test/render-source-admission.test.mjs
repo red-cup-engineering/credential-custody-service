@@ -144,3 +144,20 @@ test('unreadable sealed source is not a valid empty store and must preserve earl
   const healthy = runUnit(f.store, join(f.root, 'verified-valid'));
   assert.equal(healthy.status, 0, healthy.stderr);
 });
+
+test('a registry filename/record-id mismatch cannot silently withdraw live credentials', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  // A partial rename or wrongly installed record can leave a valid JSON object
+  // with an id from another filename. The old renderer accepted the empty
+  // consumer list and reported successful pruning of the healthy generation.
+  const path = join(f.store, 'registry', 'renamed-record.json');
+  writeFileSync(path, JSON.stringify({
+    id: 'original-record', holders: [host], consumers: [],
+  }));
+  for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+    refuseWithoutPruning(result, f.store, f.runtime, manifest, /registry.*renamed-record[.]json.*id.*mismatch/u);
+  }
+  await assert.rejects(opened.renderHost(host, f.runtime), /registry.*renamed-record[.]json.*id.*mismatch/u);
+});
