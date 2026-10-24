@@ -95,6 +95,35 @@ jobs:
           cp "$live/fixture-service.env" "$consumer/expected-kept"
           cp "$live/.credential-custody-render.json" "$consumer/expected-manifest"
 
+          # Installed-consumer regression: a file delivery cannot launder a
+          # forged environment variable into a previously healthy generation.
+          # The record and sealed value are real; only the consumer metadata
+          # is adversarial. Verify refusal, private output preservation and
+          # no secret content in diagnostics, then restore original custody.
+          cp "$valid/registry/fixture.token.json" "$consumer/expected-registry"
+          node --input-type=module - "$valid/registry/fixture.token.json" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const path = process.argv[2];
+          const record = JSON.parse(readFileSync(path, 'utf8'));
+          record.consumers = [{ host: 'fixture-host', file: '/example/key.pem', service: 'fixture-service', variable: 'SAFE\nINJECTED_ROLE' }];
+          writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+          NODE
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/file-poison-stdout" 2> "$consumer/file-poison-stderr"; then
+            echo "Installed renderer admitted forged file-bound environment assignment" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/file-poison-stdout" ]]
+          grep -Eq 'registry/fixture[.]token[.]json.*consumers' "$consumer/file-poison-stderr"
+          if grep -Fq -- 'INJECTED_ROLE' "$consumer/file-poison-stderr"; then
+            echo "Installed renderer leaked adversarial credential metadata" >&2
+            exit 1
+          fi
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          cp "$consumer/expected-registry" "$valid/registry/fixture.token.json"
+
+
           # Installed-consumer security: a sealed multiline env value may
           # contain another EnvironmentFile assignment. It must fail before
           # replacing any prior managed output; file-bound multiline secrets
