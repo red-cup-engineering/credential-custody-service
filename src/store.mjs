@@ -14,7 +14,7 @@
  * evidence or authority; custody controls its storage and use. This store is custody; it does not authenticate
  * or authorize anything.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
@@ -32,7 +32,21 @@ const DESCRIPTION_LIMIT = 200;
 export const fingerprint = (value) => createHash('sha256').update(value).digest('hex').slice(0, 16);
 
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return fallback; throw error; } };
-const writeAtomic = (path, text, mode = 0o644) => { writeFileSync(`${path}.tmp`, text, { mode }); chmodSync(`${path}.tmp`, mode); renameSync(`${path}.tmp`, path); };
+// Never reuse a predictable staging pathname: a stale .tmp symlink could
+// overwrite a file outside credential custody before the atomic rename.
+// Exclusive, unique staging also prevents overlapping writers from sharing
+// an intermediate file (it does not by itself serialize registry updates).
+const writeAtomic = (path, text, mode = 0o644) => {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, text, { mode, flag: 'wx' });
+    chmodSync(temporary, mode);
+    renameSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+};
 
 export function openStore(dir, { create = true } = {}) {
   if (!dir) throw new TypeError('a credential store directory is required (a services section data/credentials/)');
