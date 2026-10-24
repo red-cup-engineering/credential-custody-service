@@ -241,8 +241,13 @@ export function openStore(dir, { create = true } = {}) {
       outputs.push({ host: consumer.host, id: rec.id, output });
     }
   };
-  const assertNoEnvironmentCollisions = (id, candidate) =>
+  const assertNoEnvironmentCollisions = (id, candidate) => {
+    // A metadata-only rotation with no render claims cannot introduce a
+    // collision; do not demote an unrelated orphan into a global writer veto.
+    // Render receiving independently refuses incomplete custody.
+    if (!(candidate.consumers ?? []).some(c => c.variable || c.file || c.path)) return;
     assertConsumerClaims([...records().filter(existing => existing.id !== id), candidate]);
+  };
   const sealFor = (holders) => {
     const r = recipients(), keys = [...holders.map((h) => { if (!r.hosts[h]) throw new Error(`host ${h} has no recipient in recipients.json`); return r.hosts[h]; }), ...r.recovery];
     return [...new Set(keys)];
