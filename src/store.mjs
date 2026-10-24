@@ -127,11 +127,7 @@ export function openStore(dir, { create = true } = {}) {
 
     /** Create this host's identity (once) and record its public recipient. */
     async initHost(host, { recovery = false } = {}) {
-      // A host identifier is also a private-key filename: reject traversal,
-      // whitespace and control bytes before any lookup or source mutation.
-      if (typeof host !== 'string' || !ID.test(host)) {
-        throw new TypeError('invalid credential host label');
-      }
+      // identityPath already validates via the shared admission contract.
       const path = identityPath(host);
       const prior = recipients();
       if (existsSync(path)) {
