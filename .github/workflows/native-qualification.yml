@@ -172,6 +172,38 @@ jobs:
             get renamed-token > "$consumer/rename-value"
           [[ "$(cat "$consumer/rename-value")" == INERT_STAGING_VALUE ]]
 
+          # Independent installed-consumer regression: a direct get() with an
+          # authorized registry record must not follow a substituted seal link
+          # and decrypt an entirely different credential held by the same host.
+          # This exercises the packed CLI, not the in-repository source module.
+          printf 'INERT_DIFFERENT_VALUE' | "$installed/credentials" --store "$staging" --host staging-host \
+            --holders staging-host --kind token put different-token > "$consumer/different-put"
+          cp -- "$staging/sealed/renamed-token.age" "$consumer/retained-original-seal"
+          cp -- "$staging/sealed/different-token.age" "$consumer/retained-different-seal"
+          rm -- "$staging/sealed/renamed-token.age"
+          for linked_state in resolved dangling; do
+            if [[ "$linked_state" == resolved ]]; then
+              ln -s "$staging/sealed/different-token.age" "$staging/sealed/renamed-token.age"
+            else
+              ln -s "$consumer/not-yet-recovered-ciphertext" "$staging/sealed/renamed-token.age"
+            fi
+            if "$installed/credentials" --store "$staging" --host staging-host get renamed-token \
+              > "$consumer/substituted-get-stdout" 2> "$consumer/substituted-get-stderr"; then
+              echo "Installed credential get followed substituted sealed source ($linked_state)" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/substituted-get-stdout" ]]
+            grep -Fq 'sealed credential source' "$consumer/substituted-get-stderr"
+            ! grep -Fq 'INERT_DIFFERENT_VALUE' "$consumer/substituted-get-stderr"
+            [[ -L "$staging/sealed/renamed-token.age" ]]
+            cmp -- "$staging/sealed/different-token.age" "$consumer/retained-different-seal"
+            rm -- "$staging/sealed/renamed-token.age"
+          done
+          cp -- "$consumer/retained-original-seal" "$staging/sealed/renamed-token.age"
+          "$installed/credentials" --store "$staging" --host staging-host \
+            get renamed-token > "$consumer/restored-get"
+          [[ "$(cat "$consumer/restored-get")" == INERT_STAGING_VALUE ]]
+
           # This installed binary must reject path-shaped and malformed host
           # labels before touching recipients or escaping the private host dir.
           printf '%s' 'INERT_KEEP' > "$consumer/escaped.identity"
