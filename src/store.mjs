@@ -190,9 +190,13 @@ export function openStore(dir, { create = true } = {}) {
     /** The environment a service runs with on a host: each consumer variable bound to its credential's value. */
     async render(host, service) {
       await assertRenderableStore(dir, host);
-      const lines = [];
+      const lines = [], variables = new Set();
       for (const rec of records()) for (const c of rec.consumers ?? []) {
         if (c.host !== host || c.service !== service || !c.variable || c.file || c.path) continue;
+        if (variables.has(c.variable)) {
+          throw new Error(`duplicate environment binding ${c.variable} for service ${service}`);
+        }
+        variables.add(c.variable);
         const value = await this.get(rec.id, host);
         // These bytes become systemd EnvironmentFile assignments; preserve the exact value.
         // Newlines could inject another assignment; systemd control characters are
