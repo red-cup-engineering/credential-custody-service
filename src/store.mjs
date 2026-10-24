@@ -137,6 +137,26 @@ export function openStore(dir, { create = true } = {}) {
     const path = recordPath(id), value = readRegistryJson(path, { optional: true });
     return value === undefined ? null : requireRecord(path, id, value);
   };
+  // A direct get() is a source-reading boundary of its own: checking a registry
+  // grant must not let a symlink substitute another encrypted value, including
+  // ciphertext sealed to the same host. Open the source itself without following
+  // links, and keep that descriptor through the read (even if a concurrent rename
+  // changes the path). O_NONBLOCK refuses special files without hanging the caller.
+  const readSealed = (id) => {
+    const path = join(dir, 'sealed', `${id}.age`);
+    let fd;
+    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) {
+      throw new Error(`sealed credential source ${path} unavailable (${error.code ?? 'cannot open'})`, { cause: error });
+    }
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.size === 0 || !(info.mode & 0o444)) {
+        throw new Error(`sealed credential source ${path} unavailable (not a readable nonempty regular file)`);
+      }
+      return readFileSync(fd, 'utf8');
+    } finally { closeSync(fd); }
+  };
   // Once a registry entry has been enumerated it must be read successfully:
   // a vanished or malformed entry must never be mistaken for empty custody.
   const records = () => {
@@ -287,7 +307,7 @@ export function openStore(dir, { create = true } = {}) {
       const rec = record(id);
       if (!rec) throw new Error(`no credential ${id} in this store; ask for it with: credentials request ${id} --reason "…"`);
       if (!rec.holders.includes(host)) throw new Error(`host ${host} does not hold ${id} (holders: ${rec.holders.join(', ')})`);
-      return openWith(readFileSync(join(dir, 'sealed', `${id}.age`), 'utf8'), [identity(host)]);
+      return openWith(readSealed(id), [identity(host)]);
     },
 
     /**
