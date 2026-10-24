@@ -82,6 +82,31 @@ jobs:
           [[ -s "$staging/sealed/fixture.token.age" ]]
           [[ -s "$staging/registry/fixture.token.json" ]]
 
+          # The freshly installed put producer must not equate a missing
+          # registry entry with permission to overwrite orphaned ciphertext
+          # (including dangling symlinks left by interrupted custody).
+          printf 'INERT_PUT_ORPHAN' > "$staging/sealed/unclaimed-put.age"
+          if printf 'INERT_NEW_VALUE' | "$installed/credentials" --store "$staging" --host staging-host \
+            --holders staging-host --kind token put unclaimed-put > "$consumer/put-refused-stdout" 2> "$consumer/put-refused-stderr"; then
+            echo "Installed put destroyed orphaned sealed custody" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/put-refused-stdout" ]]
+          grep -Fq 'sealed credential destination' "$consumer/put-refused-stderr"
+          [[ "$(cat "$staging/sealed/unclaimed-put.age")" == INERT_PUT_ORPHAN ]]
+          [[ ! -e "$staging/registry/unclaimed-put.json" ]]
+          ln -s "$consumer/no-such-ciphertext" "$staging/sealed/dangling-put.age"
+          if printf 'INERT_NEW_VALUE' | "$installed/credentials" --store "$staging" --host staging-host \
+            --holders staging-host --kind token put dangling-put > "$consumer/dangling-put-stdout" 2> "$consumer/dangling-put-stderr"; then
+            echo "Installed put silently replaced a dangling custody link" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/dangling-put-stdout" ]]
+          grep -Fq 'sealed credential destination' "$consumer/dangling-put-stderr"
+          [[ -L "$staging/sealed/dangling-put.age" ]]
+          [[ ! -e "$consumer/no-such-ciphertext" ]]
+          [[ ! -e "$staging/registry/dangling-put.json" ]]
+
           # The installed rename producer must not replace an orphaned
           # ciphertext file simply because no destination registry record
           # exists. Its original source bytes must remain recoverable.
