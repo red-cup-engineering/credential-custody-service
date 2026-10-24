@@ -48,10 +48,19 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund --registry=https://registry.561.group/ --prefix "$consumer" "${a[0]}"
           cd "$consumer"
           node --input-type=module -e "const { openStore } = await import('@red-cup-engineering/credential-custody-service/store'); if (typeof openStore !== 'function') process.exit(1)"
+          # Exercise the shipped executable against the production regression:
+          # a missing source must preserve a previously managed runtime generation.
+          mkdir -p "$consumer/live"
+          printf 'INERT_PREVIOUS_RENDER\\n' > "$consumer/live/kept.env"
+          printf '{"version":1,"host":"fixture-host","state":"complete","outputs":["kept.env"]}\\n' > "$consumer/live/.credential-custody-render.json"
+          cp "$consumer/live/kept.env" "$consumer/expected-kept"
+          cp "$consumer/live/.credential-custody-render.json" "$consumer/expected-manifest"
           if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$consumer/live" \
             ./node_modules/.bin/credentials-render-host > "$consumer/stdout" 2> "$consumer/stderr"; then
             echo "Packaged renderer admitted missing credential source" >&2
             exit 1
           fi
-          [[ ! -e "$consumer/missing-original" && ! -e "$consumer/live" && ! -s "$consumer/stdout" ]]
+          [[ ! -e "$consumer/missing-original" && ! -s "$consumer/stdout" ]]
+          cmp -- "$consumer/live/kept.env" "$consumer/expected-kept"
+          cmp -- "$consumer/live/.credential-custody-render.json" "$consumer/expected-manifest"
           grep -Fq -- "$consumer/missing-original" "$consumer/stderr"
