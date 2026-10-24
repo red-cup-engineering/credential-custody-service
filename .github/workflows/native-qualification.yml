@@ -355,6 +355,43 @@ jobs:
             cp -- "$consumer/expected-registry" "$valid/registry/fixture.token.json"
           done
 
+          # A resolved registry symlink can borrow a perfectly valid but
+          # unrelated zero-consumer claim. Both installed read and write paths
+          # must refuse the foreign source without dropping output or custody.
+          cp -- "$consumer/expected-registry" "$consumer/foreign-registry.json"
+          node --input-type=module - "$consumer/foreign-registry.json" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const path = process.argv[2];
+          const record = JSON.parse(readFileSync(path, 'utf8'));
+          record.consumers = [];
+          writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+          NODE
+          cp -- "$valid/sealed/fixture.token.age" "$consumer/expected-seal-before-link"
+          rm -- "$valid/registry/fixture.token.json"
+          ln -s "$consumer/foreign-registry.json" "$valid/registry/fixture.token.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/foreign-stdout" 2> "$consumer/foreign-stderr"; then
+            echo "Installed renderer accepted externally linked registry claims" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/foreign-stdout" ]]
+          grep -Eq 'registry/fixture[.]token[.]json.*(ELOOP|unavailable|symlink)' "$consumer/foreign-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          if printf 'INERT_UNAUTHORIZED_REPLACEMENT' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/foreign-put-stdout" 2> "$consumer/foreign-put-stderr"; then
+            echo "Installed producer accepted externally linked registry claims" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/foreign-put-stdout" ]]
+          grep -Fq 'registry/fixture.token.json' "$consumer/foreign-put-stderr"
+          cmp -- "$valid/sealed/fixture.token.age" "$consumer/expected-seal-before-link"
+          [[ -L "$valid/registry/fixture.token.json" ]]
+          cp -- "$consumer/foreign-registry.json" "$consumer/foreign-after"
+          cmp -- "$consumer/foreign-registry.json" "$consumer/foreign-after"
+          rm -- "$valid/registry/fixture.token.json"
+          cp -- "$consumer/expected-registry" "$valid/registry/fixture.token.json"
+
           # Installed-consumer security: a sealed multiline env value may
           # contain another EnvironmentFile assignment. It must fail before
           # replacing any prior managed output; file-bound multiline secrets
