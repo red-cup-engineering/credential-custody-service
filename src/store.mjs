@@ -15,7 +15,7 @@
  * or authorize anything.
  */
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
 import { placedPath, serviceName, environmentAssignment, renderHost as renderHostCredentials } from './render-host.mjs';
@@ -102,7 +102,20 @@ export function openStore(dir, { create = true } = {}) {
     const path = join(dir, 'registry', f), filenameId = f.slice(0, -'.json'.length);
     const value = JSON.parse(readFileSync(path, 'utf8'));
     if (!ID.test(filenameId)) throw new TypeError(`credential registry entry ${path} has invalid filename id`);
-    return requireRecord(path, filenameId, value);
+    const admitted = requireRecord(path, filenameId, value);
+    // A declared record without its sealed payload is incomplete custody,
+    // not permission to retire previous host outputs. Check even records with
+    // no consumers or with holders other than the currently rendered host.
+    const sealedPath = join(dir, 'sealed', `${filenameId}.age`);
+    let sealed;
+    try { sealed = lstatSync(sealedPath); }
+    catch (error) {
+      throw new Error(`credential sealed source ${sealedPath} unavailable (${error.code ?? 'cannot inspect'})`, { cause: error });
+    }
+    if (!sealed.isFile() || sealed.size === 0 || !(sealed.mode & 0o444)) {
+      throw new Error(`credential sealed source ${sealedPath} unavailable (not a readable nonempty regular file)`);
+    }
+    return admitted;
   });
   const sealFor = (holders) => {
     const r = recipients(), keys = [...holders.map((h) => { if (!r.hosts[h]) throw new Error(`host ${h} has no recipient in recipients.json`); return r.hosts[h]; }), ...r.recovery];
