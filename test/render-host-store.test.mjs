@@ -228,6 +228,38 @@ test('host enrollment refuses traversal and invalid host labels before changing 
   assert.match(healthy.recipient, /^age1[0-9a-z]+$/u);
 });
 
+test('host enrollment preserves dangling identity links instead of reassigning unresolved custody', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-host-dangling-identity-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), host = 'fixture-host';
+  const store = openStore(storePath);
+  const identityPath = join(storePath, 'hosts', host + '.identity');
+  const missingTarget = join(root, 'missing-earlier-private-identity');
+  symlinkSync(missingTarget, identityPath);
+  const { lstatSync, readlinkSync } = await import('node:fs');
+
+  await assert.rejects(store.initHost(host), /identity|custody|symlink|exists|regular/u,
+    'a broken link reserves a private identity name until custody is explicitly reconciled');
+  assert.equal(lstatSync(identityPath).isSymbolicLink(), true, 'refusal must retain dangling evidence');
+  assert.equal(readlinkSync(identityPath), missingTarget);
+  assert.equal(existsSync(missingTarget), false, 'refusal must not follow or fabricate a target');
+  assert.equal(existsSync(join(storePath, 'recipients.json')), false, 'refusal must not grant a replacement host recipient');
+
+  const cli = spawnSync(process.execPath, [
+    new URL('../scripts/credentials.mjs', import.meta.url).pathname,
+    '--store', storePath, '--host', host, 'init-host',
+  ], { encoding: 'utf8' });
+  assert.notEqual(cli.status, 0, 'installed producer must refuse the same unresolved custody');
+  assert.equal(cli.stdout, '', 'refused enrollment must not claim success');
+  assert.equal(lstatSync(identityPath).isSymbolicLink(), true);
+  assert.equal(existsSync(join(storePath, 'recipients.json')), false);
+
+  rmSync(identityPath);
+  const created = await store.initHost(host);
+  assert.equal(created.created, true, 'an unoccupied identity can still be enrolled');
+  assert.equal(lstatSync(identityPath).isFile(), true);
+});
+
 test('host enrollment refuses interrupted or mismatched custody instead of silently granting new identity', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-host-custody-refusal-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
