@@ -254,6 +254,21 @@ export function openStore(dir, { create = true } = {}) {
       assertNoEnvironmentCollisions(id, next);
       const keys = sealFor(next.holders);
       const sealedPath = join(dir, 'sealed', `${id}.age`);
+      // A registered ID is not proof that its sealed source still exists.
+      // In particular, replacing a resolved/dangling link or a lost/empty
+      // payload would hide interrupted custody and may turn an unrecoverable
+      // key into apparently healthy source. Require original regular, nonempty
+      // ciphertext before ordinary rotation; recovery is a separate decision.
+      if (prior !== null) {
+        let original;
+        try { original = lstatSync(sealedPath); }
+        catch (error) {
+          throw new Error(`sealed credential source ${sealedPath} unavailable; reconcile custody before rotation`, { cause: error });
+        }
+        if (!original.isFile() || !original.size || !(original.mode & 0o444)) {
+          throw new Error(`sealed credential source ${sealedPath} is not a readable nonempty regular file; reconcile custody before rotation`);
+        }
+      }
       try { writeAtomic(sealedPath, await sealTo(value, keys), 0o644, { exclusive: prior === null }); }
       catch (error) {
         if (prior === null && error.code === 'EEXIST') {
