@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
-import { placedPath, renderHost as renderHostCredentials } from './render-host.mjs';
+import { placedPath, serviceName, renderHost as renderHostCredentials } from './render-host.mjs';
 import { assertRenderableStore } from './render-source-admission.mjs';
 
 export const KINDS = Object.freeze(['api-key', 'oauth-client-secret', 'oauth-refresh-token', 'token', 'password', 'passphrase', 'private-key', 'session-secret', 'other']);
@@ -70,10 +70,21 @@ export function openStore(dir, { create = true } = {}) {
     const delivers = (consumer) => {
       if (!consumer || typeof consumer !== 'object' || Array.isArray(consumer)
         || typeof consumer.host !== 'string' || !consumer.host) return false;
-      const file = (typeof consumer.file === 'string' && consumer.file.length > 0)
-        || (typeof consumer.path === 'string' && consumer.path.length > 0);
-      const variable = typeof consumer.service === 'string' && consumer.service.length > 0
-        && typeof consumer.variable === 'string' && /^[A-Z][A-Z0-9_]*$/u.test(consumer.variable);
+      // A file consumer must not bypass the variable/service checks: the
+      // renderer writes file bindings into env files, so a newline, assignment,
+      // missing service, or unsafe service name is a source-integrity failure.
+      for (const key of ['file', 'path']) {
+        if (Object.hasOwn(consumer, key) && (typeof consumer[key] !== 'string' || !consumer[key].trim())) return false;
+      }
+      if (Object.hasOwn(consumer, 'path')) {
+        try { placedPath(consumer.path); } catch { return false; }
+      }
+      const file = Object.hasOwn(consumer, 'file') || Object.hasOwn(consumer, 'path');
+      const variable = Object.hasOwn(consumer, 'variable');
+      if (Object.hasOwn(consumer, 'service') || variable) {
+        try { serviceName(consumer.service); } catch { return false; }
+      }
+      if (variable && (typeof consumer.variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(consumer.variable))) return false;
       return file || variable;
     };
     if (!Array.isArray(value.consumers) || value.consumers.some((consumer) => !delivers(consumer))) {
