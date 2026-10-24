@@ -237,3 +237,69 @@ test('malformed file-bound variables cannot masquerade as safe file-only deliver
     await assert.rejects(opened.renderHost(host, f.runtime), /registry.*inert-file-credential[.]json.*consumers/u, label);
   }
 });
+
+
+test('put refuses corrupt source updates before replacing any sealed credential bytes', async t => {
+  const f = fixture(t);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  await opened.put('safe', 'ORIGINAL_INERT_VALUE', { holders: [host], consumers: [{ host, service: 'fixture-service', variable: 'SAFE' }] });
+  const record = join(f.store, 'registry', 'safe.json');
+  const sealed = join(f.store, 'sealed', 'safe.age');
+  const beforeRecord = readFileSync(record, 'utf8');
+  const beforeSeal = readFileSync(sealed, 'utf8');
+  const bad = [
+    ['file-bound env injection', { consumers: [{ host, file: '/example/key', service: 'fixture-service', variable: 'BAD\nFORGED' }] }],
+    ['missing delivery', { consumers: [{ host }] }],
+    ['null roster', { consumers: null }],
+    ['foreign id', { id: 'foreign' }],
+    ['invalid placement', { consumers: [{ host, path: '../../escape', service: 'fixture-service', variable: 'FILE_PATH' }] }],
+  ];
+  for (const [label, fields] of bad) {
+    await assert.rejects(opened.put('safe', 'REPLACEMENT_INERT_VALUE', { holders: [host], ...fields }), /registry|consumers|id mismatch/u, label);
+    assert.equal(readFileSync(record, 'utf8'), beforeRecord, label + ' must not replace the registry');
+    assert.equal(readFileSync(sealed, 'utf8'), beforeSeal, label + ' must not reseal the secret');
+  }
+  const updated = await opened.put('safe', 'VALID_ROTATION_INERT_VALUE', { holders: [host] });
+  assert.equal(updated.id, 'safe', 'valid rotations remain enabled');
+});
+
+test('bind rejects unsafe service names before corrupting the original registry', async t => {
+  const f = fixture(t);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  await opened.put('safe', 'INERT_VALUE', { holders: [host] });
+  const record = join(f.store, 'registry', 'safe.json');
+  const original = readFileSync(record, 'utf8');
+  for (const service of ['../escape', 'fixture\nFORGED=1', 'bad/service']) {
+    assert.throws(() => opened.bind('safe', { host, service, variable: 'SAFE' }), /service|single nonempty filename/u);
+    assert.equal(readFileSync(record, 'utf8'), original);
+  }
+  assert.equal(opened.bind('safe', { host, service: 'fixture-service', variable: 'SAFE' }).variable, 'SAFE');
+});
+
+test('bindFile refuses forged assignments and unheld host grants without source mutation', async t => {
+  const f = fixture(t);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  await opened.put('file', 'INERT_FILE_VALUE', {
+    holders: [host],
+    consumers: [{ host, file: '/example/file', service: 'fixture-service' }],
+  });
+  const record = join(f.store, 'registry', 'file.json');
+  const original = readFileSync(record, 'utf8');
+  for (const variable of ['BAD\nFORGED', 'BAD=1', '', 37]) {
+    assert.throws(() => opened.bindFile('file', { host, service: 'fixture-service', variable }), /variable|UPPER_CASE/u);
+    assert.equal(readFileSync(record, 'utf8'), original);
+  }
+  assert.equal(opened.bindFile('file', { host, service: 'fixture-service', variable: 'FILE_PATH' }).variable, 'FILE_PATH');
+
+  await opened.put('unheld', 'INERT_ONLY_ON_FIXTURE_HOST', {
+    holders: [host],
+    consumers: [{ host: 'other-host', file: '/example/other', service: 'fixture-service' }],
+  });
+  const unheldRecord = join(f.store, 'registry', 'unheld.json');
+  const before = readFileSync(unheldRecord, 'utf8');
+  assert.throws(() => opened.bindFile('unheld', { host: 'other-host', service: 'fixture-service', variable: 'FILE_PATH' }), /not sealed|not held|holder/u);
+  assert.equal(readFileSync(unheldRecord, 'utf8'), before);
+});
