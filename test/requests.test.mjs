@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -100,4 +100,33 @@ test('syntactically valid but unrecognized request states cannot disappear from 
   }
   writeFileSync(path, valid);
   assert.deepEqual(store.requests().map(row => row.id), ['provider.first']);
+});
+
+test('a linked external request file is not an authorized original backlog', t => {
+  const { dir, store } = fixture(t), path = join(dir, 'requests.jsonl');
+  const external = join(dir, '..', 'other-organization-request-list.jsonl');
+  const data = JSON.stringify({ at: '2026-10-24T20:45:00Z', id: 'foreign.need', state: 'requested',
+    reason: 'INERT_OTHER_ORGANIZATION', by: 'foreign-host' }) + '\n';
+  writeFileSync(external, data);
+  symlinkSync(external, path);
+  assert.throws(() => store.requests(), /credential requests.*(unavailable|symlink|source)/iu,
+    'an external log must not be mistaken for the selected store\'s requests');
+  const listed = cli(dir, 'requests', '--all');
+  assert.notEqual(listed.status, 0);
+  assert.equal(listed.stdout, '');
+  assert.equal(listed.stderr.includes('INERT_OTHER_ORGANIZATION'), false);
+  assert.equal(readFileSync(external, 'utf8'), data);
+});
+
+test('a linked external request file may not receive newly requested credential metadata', t => {
+  const { dir, store } = fixture(t), path = join(dir, 'requests.jsonl');
+  const external = join(dir, '..', 'unrelated-output-sentinel.jsonl');
+  writeFileSync(external, 'INERT_OUTSIDE_CUSTODY_MUST_REMAIN_UNCHANGED\n');
+  const before = readFileSync(external);
+  symlinkSync(external, path);
+  assert.throws(() => store.request('inert.need', { reason: 'fixture only', by: 'fixture-host' }),
+    /credential requests.*(unavailable|symlink|source)/iu,
+    'request append must not follow a link into unrelated storage');
+  assert.deepEqual(readFileSync(external), before, 'no external file may be changed on refusal');
+  assert.equal(existsSync(path), true, 'source evidence survives refusal without path replacement');
 });
