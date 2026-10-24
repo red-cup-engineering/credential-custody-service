@@ -127,3 +127,38 @@ test('host render refuses injected environment assignment bytes before changing 
   assert.equal(final.status, 0, final.stderr);
   assert.match(readFileSync(envPath, 'utf8'), /FIXTURE=INERT_ROTATED/u);
 });
+
+
+test('systemd EnvironmentFile preserves quoted, escaped and whitespace-bearing credentials and file paths', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-systemd-escape-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store');
+  const runtime = join(root, 'runtime\\with spaces');
+  const host = 'fixture-host';
+  const store = openStore(storePath);
+  await store.initHost(host);
+  const original = '  INERT\\route "quoted" $marker  ';
+  await store.put('fixture-env', original, {
+    holders: [host], consumers: [{ host, service: 'fixture', variable: 'FIXTURE_SECRET' }],
+  });
+  await store.put('fixture-file', 'INERT_FILE', {
+    holders: [host], consumers: [{ host, service: 'fixture', path: 'keys/fixture.pem', variable: 'FIXTURE_FILE' }],
+  });
+  const direct = await store.render(host, 'fixture');
+  assert.equal(direct, 'FIXTURE_SECRET=' + JSON.stringify(original) + '\n',
+    'direct render must preserve the value through systemd EnvironmentFile quoting');
+  const delivered = await store.renderHost(host, runtime);
+  assert.deepEqual(delivered.services, ['fixture']);
+  const env = readFileSync(join(runtime, 'fixture.env'));
+  assert.equal(env.toString('utf8'), 'FIXTURE_SECRET=' + JSON.stringify(original) +
+    '\nFIXTURE_FILE=' + JSON.stringify(join(runtime, 'keys/fixture.pem')) + '\n',
+    'file path and secret must both round-trip through quoted systemd assignments');
+  assert.equal(readFileSync(join(runtime, 'keys/fixture.pem'), 'utf8'), 'INERT_FILE');
+  const manifest = readFileSync(join(runtime, '.credential-custody-render.json'));
+  await store.put('fixture-env', 'INERT_CONTROL\tVALUE');
+  await assert.rejects(store.render(host, 'fixture'), /single-line|control character/u,
+    'embedded controls should not be silently delivered into an EnvironmentFile');
+  await assert.rejects(store.renderHost(host, runtime), /single-line|control character/u);
+  assert.deepEqual(readFileSync(join(runtime, 'fixture.env')), env);
+  assert.deepEqual(readFileSync(join(runtime, '.credential-custody-render.json')), manifest);
+});
