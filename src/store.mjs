@@ -123,7 +123,7 @@ export function openStore(dir, { create = true } = {}) {
 
     /** The environment a service runs with on a host: each consumer variable bound to its credential's value. */
     async render(host, service) {
-      assertRenderableStore(dir, host);
+      await assertRenderableStore(dir, host);
       const lines = [];
       for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable && !c.file && !c.path) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
       return lines.sort().join('\n') + (lines.length ? '\n' : '');
@@ -181,7 +181,7 @@ export function openStore(dir, { create = true } = {}) {
      * `files/<id>` per file credential. Re-run on a timer so rotations reach the services.
      */
     async renderHost(host, to) {
-      assertRenderableStore(dir, host);
+      await assertRenderableStore(dir, host);
       return renderHostCredentials(this, host, to);
     },
 
