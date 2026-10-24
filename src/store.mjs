@@ -276,6 +276,13 @@ export function openStore(dir, { create = true } = {}) {
     try { contents = readFileSync(fd, 'utf8'); }
     catch (error) { throw new Error(`credential requests source ${requestsPath} unavailable (cannot read)`, { cause: error }); }
     finally { closeSync(fd); }
+    // Our append producer terminates each JSONL record. A parseable but
+    // unterminated tail is not a complete receipt: O_APPEND would concatenate
+    // the next request into that same row and then falsely acknowledge Work.
+    // Refuse the existing source unchanged; reconciliation owns its recovery.
+    if (contents.length && !contents.endsWith('\n')) {
+      throw new Error(`credential requests source ${requestsPath} has an unterminated final line; reconcile incomplete custody before appending`);
+    }
     const rows = [];
     for (const [index, line] of contents.split('\n').entries()) {
       if (!line.trim()) continue;
