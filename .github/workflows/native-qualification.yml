@@ -55,6 +55,16 @@ jobs:
           valid="$consumer/valid-original"
           live="$consumer/live"
           "$installed/credentials" --store "$valid" --host fixture-host init-host > "$consumer/host-enrollment"
+          "$installed/credentials" --store "$valid" --host fixture-host init-host > "$consumer/host-enrollment-repeat"
+          node --input-type=module - "$consumer/host-enrollment" "$consumer/host-enrollment-repeat" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const [first, again] = process.argv.slice(2).map(path => JSON.parse(readFileSync(path, 'utf8')));
+          assert.equal(first.created, true);
+          assert.equal(again.created, false);
+          assert.match(first.recipient, /^age1[0-9a-z]+$/u);
+          assert.equal(again.recipient, first.recipient, 'repeat enrollment must return public recipient, never an unresolved Promise');
+          NODE
           printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
             --holders fixture-host --kind token put fixture.token > "$consumer/put-result"
           "$installed/credentials" --store "$valid" --host fixture-host \
