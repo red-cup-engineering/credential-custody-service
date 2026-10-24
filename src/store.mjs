@@ -52,31 +52,33 @@ export function openStore(dir, { create = true } = {}) {
     if ((statSync(path).mode & 0o077) !== 0) throw new Error(`${path} is readable by others; chmod 600 it`);
     return readFileSync(path, 'utf8').trim();
   }
-  const record = (id) => {
-    const path = recordPath(id), value = readJson(path, null);
-    if (value !== null && (!value || typeof value !== 'object' || Array.isArray(value) || value.id !== id)) {
+  // A listed record is part of the source's custody evidence. Missing or
+  // malformed holder/consumer arrays cannot silently mean "no consumers":
+  // doing so authorizes withdrawal of previously healthy runtime credentials.
+  const requireRecord = (path, id, value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || value.id !== id) {
       throw new TypeError(`credential registry entry ${path} id mismatch or invalid record`);
+    }
+    if (!Array.isArray(value.holders) || value.holders.some((holder) => typeof holder !== 'string' || !holder)) {
+      throw new TypeError(`credential registry entry ${path} holders must be a list of hosts`);
+    }
+    if (!Array.isArray(value.consumers) || value.consumers.some((consumer) => !consumer || typeof consumer !== 'object'
+      || Array.isArray(consumer) || typeof consumer.host !== 'string' || !consumer.host)) {
+      throw new TypeError(`credential registry entry ${path} consumers must be a list of host-bound records`);
     }
     return value;
   };
+  const record = (id) => {
+    const path = recordPath(id), value = readJson(path, undefined);
+    return value === undefined ? null : requireRecord(path, id, value);
+  };
   // Once a registry entry has been enumerated it must be read successfully:
-  // treating ENOENT as a missing optional record silently erases a credential
-  // from the render plan, allowing a later manifest reconciliation to withdraw
-  // its previously healthy output. Only record(id) may have an absent fallback.
+  // a vanished or malformed entry must never be mistaken for empty custody.
   const records = () => readdirSync(join(dir, 'registry')).filter((f) => f.endsWith('.json')).map((f) => {
-    const path = join(dir, 'registry', f);
+    const path = join(dir, 'registry', f), filenameId = f.slice(0, -'.json'.length);
     const value = JSON.parse(readFileSync(path, 'utf8'));
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new TypeError(`credential registry entry ${path} must be a record object`);
-    }
-    // The directory entry itself is source evidence: an interrupted rename or
-    // a mismatched imported record must not become an authorized empty render.
-    // Refuse BEFORE touching the runtime manifest or withdrawing outputs.
-    const filenameId = f.slice(0, -'.json'.length);
-    if (!ID.test(filenameId) || value.id !== filenameId) {
-      throw new TypeError(`credential registry entry ${path} id mismatch: file ${JSON.stringify(filenameId)}, record ${JSON.stringify(value.id)}`);
-    }
-    return value;
+    if (!ID.test(filenameId)) throw new TypeError(`credential registry entry ${path} has invalid filename id`);
+    return requireRecord(path, filenameId, value);
   });
   const sealFor = (holders) => {
     const r = recipients(), keys = [...holders.map((h) => { if (!r.hosts[h]) throw new Error(`host ${h} has no recipient in recipients.json`); return r.hosts[h]; }), ...r.recovery];
