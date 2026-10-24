@@ -115,13 +115,13 @@ test('an enumerated registry entry that vanished is a source refusal, never perm
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
   const opened = openStore(f.store);
   await opened.initHost(host);
-  // A dangling link has a directory entry but its target vanished between
-  // enumeration and read. The old records() silently filtered ENOENT to null,
-  // mistakenly authorizing an empty render and deleting managed outputs.
+  // A dangling link has a directory entry but does not constitute source
+  // custody. The reader rejects the link itself (ELOOP) rather than letting
+  // either broken or resolved links authorize output withdrawal.
   const missingRecord = join(f.store, 'registry', 'vanished.json');
   symlinkSync(join(f.root, 'not-there.json'), missingRecord);
   for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
-    refuseWithoutPruning(result, f.store, f.runtime, manifest, /ENOENT.*vanished\.json/u);
+    refuseWithoutPruning(result, f.store, f.runtime, manifest, /registry.*vanished[.]json.*(ELOOP|symlink|unavailable)/u);
   }
   await assert.rejects(opened.renderHost(host, f.runtime), /vanished\.json|ENOENT/u);
   assert.equal(readFileSync(join(f.runtime, 'kept.env'), 'utf8'), 'PREVIOUSLY_RENDERED_INERT_VALUE\n');
