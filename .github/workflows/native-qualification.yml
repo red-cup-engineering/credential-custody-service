@@ -99,9 +99,9 @@ jobs:
           # contain another EnvironmentFile assignment. It must fail before
           # replacing any prior managed output; file-bound multiline secrets
           # are covered separately by the native suite.
-          printf 'INERT_NEW_VALUE\\nINJECTED_ROLE=admin' | "$installed/credentials" --store "$valid" --host fixture-host \\
+          printf 'INERT_NEW_VALUE\nINJECTED_ROLE=admin' | "$installed/credentials" --store "$valid" --host fixture-host \
             --holders fixture-host --kind token put fixture.token > "$consumer/unsafe-put"
-          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \\
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
             "$installed/credentials-render-host" > "$consumer/injected-stdout" 2> "$consumer/injected-stderr"; then
             echo "Installed renderer admitted injected environment assignment from a sealed value" >&2
             exit 1
@@ -114,7 +114,7 @@ jobs:
           fi
           cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
           cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
-          printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \\
+          printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
             --holders fixture-host --kind token put fixture.token > "$consumer/restore-put"
 
           # A complete-looking, identity-valid source with unreadable sealed/
