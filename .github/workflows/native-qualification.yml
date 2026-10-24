@@ -100,6 +100,34 @@ jobs:
           cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
           cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
 
+          # A present registry directory is not enough: an entry which disappears
+          # after enumeration must fail closed, not turn this valid source into
+          # an empty generation and remove the previously rendered service.
+          ln -s "$consumer/absent-credential-record" "$valid/registry/vanished.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/vanished-stdout" 2> "$consumer/vanished-stderr"; then
+            echo "Packaged renderer silently skipped a vanished registry entry" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/vanished-stdout" ]]
+          grep -Fq -- 'registry/vanished.json' "$consumer/vanished-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          rm -- "$valid/registry/vanished.json"
+
+          # An enumerated JSON null cannot be interpreted as an absent record.
+          printf 'null\n' > "$valid/registry/invalid.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/invalid-stdout" 2> "$consumer/invalid-stderr"; then
+            echo "Packaged renderer silently skipped an invalid registry record" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/invalid-stdout" ]]
+          grep -Fq -- 'registry/invalid.json' "$consumer/invalid-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          rm -- "$valid/registry/invalid.json"
+
           if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
             "$installed/credentials-render-host" > "$consumer/stdout" 2> "$consumer/stderr"; then
             echo "Packaged renderer admitted missing credential source" >&2
