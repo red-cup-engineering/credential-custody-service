@@ -172,7 +172,16 @@ export function openStore(dir, { create = true } = {}) {
       // identityPath already validates via the shared admission contract.
       const path = identityPath(host);
       const prior = recipients();
-      if (existsSync(path)) {
+      // existsSync follows symlinks and reports a dangling identity link as
+      // missing. That link may be evidence of interrupted or externally mounted
+      // private custody; never silently replace it with a fresh identity.
+      let priorIdentity;
+      try { priorIdentity = lstatSync(path); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (priorIdentity) {
+        if (!priorIdentity.isFile() && !priorIdentity.isSymbolicLink()) {
+          throw new Error(`host ${host} identity custody at ${path} is not a file; reconcile explicitly`);
+        }
         const recipient = await recipientOf(identity(host));
         const acknowledged = recovery ? prior.recovery?.includes(recipient) : prior.hosts?.[host] === recipient;
         if (!acknowledged) throw new Error(`host ${host} identity/recipient custody mismatch; repair registration explicitly`);
@@ -182,7 +191,13 @@ export function openStore(dir, { create = true } = {}) {
         throw new Error(`host ${host} has a recipient but no local identity; repair custody explicitly`);
       }
       const id = await generateIdentity(), recipient = await recipientOf(id);
-      writeAtomic(path, `${id}\n`, 0o600);
+      // A concurrent writer can create the name after lstat. Publish only
+      // into an unoccupied name, without replacing any prior custody evidence.
+      try { writeAtomic(path, `${id}\n`, 0o600, { exclusive: true }); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw new Error(`host ${host} identity custody at ${path} already exists; reconcile explicitly`, { cause: error });
+        throw error;
+      }
       const r = recipients();
       if (recovery) r.recovery = [...new Set([...(r.recovery ?? []), recipient])]; else r.hosts[host] = recipient;
       writeAtomic(recipientsPath, `${JSON.stringify(r, null, 2)}\n`);
