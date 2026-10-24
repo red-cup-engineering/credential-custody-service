@@ -19,7 +19,7 @@ import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSy
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
 import { placedPath, serviceName, environmentAssignment, renderHost as renderHostCredentials } from './render-host.mjs';
-import { assertRenderableStore } from './render-source-admission.mjs';
+import { assertRenderableStore, assertCredentialHost } from './render-source-admission.mjs';
 
 export const KINDS = Object.freeze(['api-key', 'oauth-client-secret', 'oauth-refresh-token', 'token', 'password', 'passphrase', 'private-key', 'session-secret', 'other']);
 const ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
@@ -44,7 +44,7 @@ export function openStore(dir, { create = true } = {}) {
   const recipientsPath = join(dir, 'recipients.json');
   const recipients = () => readJson(recipientsPath, { hosts: {}, recovery: [] });
   const recordPath = (id) => { if (!ID.test(id)) throw new TypeError(`credential id ${id} must be lowercase letters, digits, dots and dashes`); return join(dir, 'registry', `${id}.json`); };
-  const identityPath = (host) => join(dir, 'hosts', `${host}.identity`);
+  const identityPath = (host) => join(dir, 'hosts', `${assertCredentialHost(host)}.identity`);
 
   function identity(host) {
     const path = identityPath(host);
