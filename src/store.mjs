@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
-import { placedPath, serviceName, renderHost as renderHostCredentials } from './render-host.mjs';
+import { placedPath, serviceName, environmentAssignment, renderHost as renderHostCredentials } from './render-host.mjs';
 import { assertRenderableStore } from './render-source-admission.mjs';
 
 export const KINDS = Object.freeze(['api-key', 'oauth-client-secret', 'oauth-refresh-token', 'token', 'password', 'passphrase', 'private-key', 'session-secret', 'other']);
@@ -181,14 +181,14 @@ export function openStore(dir, { create = true } = {}) {
       for (const rec of records()) for (const c of rec.consumers ?? []) {
         if (c.host !== host || c.service !== service || !c.variable || c.file || c.path) continue;
         const value = await this.get(rec.id, host);
-        // These bytes are written unquoted into a systemd EnvironmentFile.
-        // Newlines could turn one sealed value into a second environment
-        // assignment; NUL is not representable. Fail before touching outputs.
+        // These bytes become systemd EnvironmentFile assignments; preserve the exact value.
+        // Newlines could inject another assignment; systemd control characters are
+        // not portable values. Fail before touching outputs.
         // Multiline secrets remain supported by file consumers.
-        if (typeof value !== 'string' || /[\r\n\u0000]/u.test(value)) {
-          throw new TypeError(`environment credential ${rec.id} must have a single-line value; deliver multiline values as files`);
+        if (typeof value !== 'string' || /[\u0000-\u001f\u007f\uFEFF]/u.test(value)) {
+          throw new TypeError(`environment credential ${rec.id} must have a single-line value without control characters; deliver such values as files`);
         }
-        lines.push(`${c.variable}=${value}`);
+        lines.push(environmentAssignment(c.variable, value));
       }
       return lines.sort().join('\n') + (lines.length ? '\n' : '');
     },
