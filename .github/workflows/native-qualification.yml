@@ -132,8 +132,8 @@ jobs:
           # as trustworthy custody evidence. Before this repair an extra record
           # with no consumers was admitted without error (and a partial source
           # could subsequently withdraw the previous live generation).
-          printf '%s\\n' '{"id":"foreign-record","holders":["fixture-host"],"consumers":[]}' > "$valid/registry/wrong-name.json"
-          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \\
+          printf '%s\n' '{"id":"foreign-record","holders":["fixture-host"],"consumers":[]}' > "$valid/registry/wrong-name.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
             "$installed/credentials-render-host" > "$consumer/mismatch-stdout" 2> "$consumer/mismatch-stderr"; then
             echo "Packaged renderer admitted mismatched registry record identity" >&2
             exit 1
