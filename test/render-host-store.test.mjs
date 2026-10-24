@@ -218,3 +218,59 @@ test('systemd EnvironmentFile preserves quoted, escaped and whitespace-bearing c
   assert.deepEqual(readFileSync(join(runtime, 'fixture.env')), env);
   assert.deepEqual(readFileSync(join(runtime, '.credential-custody-render.json')), manifest);
 });
+
+
+test('duplicate environment bindings must refuse without retiring a healthy generation', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-env-collision-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
+  const store = openStore(storePath);
+  await store.initHost(host);
+  await store.put('first', 'INERT_FIRST', {
+    holders: [host], consumers: [{ host, service: 'fixture', variable: 'DUPLICATE' }],
+  });
+  await store.renderHost(host, runtime);
+  const envFile = join(runtime, 'fixture.env');
+  const manifestFile = join(runtime, '.credential-custody-render.json');
+  const beforeEnv = readFileSync(envFile), beforeManifest = readFileSync(manifestFile);
+  const cli = () => spawnSync(process.execPath, [
+    new URL('../scripts/credentials.mjs', import.meta.url).pathname,
+    '--store', storePath, '--host', host, 'render-host', '--to', runtime,
+  ], { encoding: 'utf8' });
+
+  // Even a syntactically valid source must not silently select the last
+  // secret sharing the same systemd environment variable name.
+  await store.put('second', 'INERT_SECOND', {
+    holders: [host], consumers: [{ host, service: 'fixture', variable: 'DUPLICATE' }],
+  });
+  await assert.rejects(store.render(host, 'fixture'), /duplicate.*environment.*DUPLICATE|DUPLICATE.*already bound/u);
+  let refused = cli();
+  assert.notEqual(refused.status, 0);
+  assert.equal(refused.stdout, '');
+  assert.match(refused.stderr, /duplicate.*environment.*DUPLICATE|DUPLICATE.*already bound/u);
+  assert.deepEqual(readFileSync(envFile), beforeEnv);
+  assert.deepEqual(readFileSync(manifestFile), beforeManifest);
+  assert.equal(refused.stderr.includes('INERT_SECOND'), false);
+
+  // A path binding also claims the environment variable. It must not
+  // overwrite a secret just because it is backed by a different file.
+  await store.put('second', 'INERT_FILE', {
+    holders: [host], consumers: [{ host, service: 'fixture', variable: 'DUPLICATE', path: 'keys/fixture.pem' }],
+  });
+  refused = cli();
+  assert.notEqual(refused.status, 0);
+  assert.equal(refused.stdout, '');
+  assert.match(refused.stderr, /duplicate.*environment.*DUPLICATE|DUPLICATE.*already bound/u);
+  assert.deepEqual(readFileSync(envFile), beforeEnv);
+  assert.deepEqual(readFileSync(manifestFile), beforeManifest);
+
+  // Distinct names remain permitted and can be received normally.
+  await store.put('second', 'INERT_FILE', {
+    holders: [host], consumers: [{ host, service: 'fixture', variable: 'SECOND_FILE', path: 'keys/fixture.pem' }],
+  });
+  const accepted = cli();
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.match(readFileSync(envFile, 'utf8'), /DUPLICATE=INERT_FIRST/u);
+  assert.match(readFileSync(envFile, 'utf8'), /SECOND_FILE=/u);
+  assert.equal(readFileSync(join(runtime, 'keys/fixture.pem'), 'utf8'), 'INERT_FILE');
+});
