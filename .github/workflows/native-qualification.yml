@@ -367,6 +367,7 @@ jobs:
           writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
           NODE
           cp -- "$valid/sealed/fixture.token.age" "$consumer/expected-seal-before-link"
+          cp -- "$consumer/foreign-registry.json" "$consumer/foreign-before"
           rm -- "$valid/registry/fixture.token.json"
           ln -s "$consumer/foreign-registry.json" "$valid/registry/fixture.token.json"
           if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
@@ -387,8 +388,7 @@ jobs:
           grep -Fq 'registry/fixture.token.json' "$consumer/foreign-put-stderr"
           cmp -- "$valid/sealed/fixture.token.age" "$consumer/expected-seal-before-link"
           [[ -L "$valid/registry/fixture.token.json" ]]
-          cp -- "$consumer/foreign-registry.json" "$consumer/foreign-after"
-          cmp -- "$consumer/foreign-registry.json" "$consumer/foreign-after"
+          cmp -- "$consumer/foreign-registry.json" "$consumer/foreign-before"
           rm -- "$valid/registry/fixture.token.json"
           cp -- "$consumer/expected-registry" "$valid/registry/fixture.token.json"
 
