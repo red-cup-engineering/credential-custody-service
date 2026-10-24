@@ -157,8 +157,8 @@ jobs:
           # A registry record with no holders is not producible by the original
           # credential put contract. Refuse rather than interpreting it as
           # permission to retire previously healthy managed outputs.
-          printf '%s\\n' '{"id":"zero-holders","holders":[],"consumers":[]}' > "$valid/registry/zero-holders.json"
-          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \\
+          printf '%s\n' '{"id":"zero-holders","holders":[],"consumers":[]}' > "$valid/registry/zero-holders.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
             "$installed/credentials-render-host" > "$consumer/zero-holders-stdout" 2> "$consumer/zero-holders-stderr"; then
             echo "Packaged renderer admitted a zero-holder registry record" >&2
             exit 1
