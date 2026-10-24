@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -475,4 +475,50 @@ test('credential producers reject colliding service-variable grants before sourc
   const env = readFileSync(join(runtime, 'fixture.env'), 'utf8');
   assert.match(env, /ALREADY_USED=INERT_FIRST/u);
   assert.match(env, /DISTINCT=INERT_SECOND/u);
+});
+
+
+test('registered rotation preserves unresolved sealed entries rather than legitimizing damage', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-rotation-linked-seal-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), host = 'fixture-host';
+  const opened = openStore(storePath);
+  await opened.initHost(host);
+  await opened.put('first', 'INERT_FIRST', { holders: [host], consumers: [] });
+  await opened.put('other', 'INERT_OTHER', { holders: [host], consumers: [] });
+  const registry = join(storePath, 'registry/first.json');
+  const seal = join(storePath, 'sealed/first.age');
+  const foreign = join(storePath, 'sealed/other.age');
+  const registryBefore = readFileSync(registry);
+  const original = readFileSync(seal);
+  const otherBefore = readFileSync(foreign);
+
+  rmSync(seal);
+  symlinkSync(foreign, seal);
+  await assert.rejects(opened.put('first', 'INERT_NOT_AUTHORIZED_TO_REPLACE_LINK', {}),
+    /sealed credential.*(source|custody|regular|unavailable|symlink)/iu,
+    'an existing registry record is not permission to erase linked sealed evidence');
+  assert.equal(lstatSync(seal).isSymbolicLink(), true, 'linked custody evidence survives refusal');
+  assert.deepEqual(readFileSync(registry), registryBefore);
+  assert.deepEqual(readFileSync(foreign), otherBefore);
+
+  rmSync(seal);
+  symlinkSync(join(root, 'not-recovered-yet.age'), seal);
+  await assert.rejects(opened.put('first', 'INERT_NOT_AUTHORIZED_TO_REPAIR_LINK', {}),
+    /sealed credential.*(source|custody|regular|unavailable|symlink)/iu,
+    'dangling sealed custody must remain unresolved, not be replaced');
+  assert.equal(lstatSync(seal).isSymbolicLink(), true);
+  assert.deepEqual(readFileSync(registry), registryBefore);
+
+  rmSync(seal);
+  await assert.rejects(opened.put('first', 'INERT_NOT_AUTHORIZED_TO_FILL_MISSING', {}),
+    /sealed credential.*(source|custody|regular|unavailable|missing)/iu,
+    'missing original ciphertext requires explicit reconciliation, not silent rotation');
+  assert.deepEqual(readFileSync(registry), registryBefore);
+  assert.equal(existsSync(seal), false);
+
+  writeFileSync(seal, original);
+  const rotated = await opened.put('first', 'INERT_VALID_ROTATION', {});
+  assert.equal(rotated.id, 'first');
+  assert.equal(await opened.get('first', host), 'INERT_VALID_ROTATION');
 });
