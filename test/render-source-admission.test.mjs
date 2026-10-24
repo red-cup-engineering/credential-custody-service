@@ -121,10 +121,10 @@ test('an enumerated registry entry that vanished is a source refusal, never perm
   const missingRecord = join(f.store, 'registry', 'vanished.json');
   symlinkSync(join(f.root, 'not-there.json'), missingRecord);
   for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
-    refuseWithoutPruning(result, f.store, f.runtime, manifest, /vanished\\.json.*ENOENT/u);
+    refuseWithoutPruning(result, f.store, f.runtime, manifest, /ENOENT.*vanished\.json/u);
   }
-  await assert.rejects(opened.renderHost(host, f.runtime), /vanished\\.json|ENOENT/u);
-  assert.equal(readFileSync(join(f.runtime, 'kept.env'), 'utf8'), 'PREVIOUSLY_RENDERED_INERT_VALUE\\n');
+  await assert.rejects(opened.renderHost(host, f.runtime), /vanished\.json|ENOENT/u);
+  assert.equal(readFileSync(join(f.runtime, 'kept.env'), 'utf8'), 'PREVIOUSLY_RENDERED_INERT_VALUE\n');
   assert.equal(readFileSync(join(f.runtime, '.credential-custody-render.json'), 'utf8'), manifest);
 });
 
