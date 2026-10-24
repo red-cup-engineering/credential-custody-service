@@ -393,6 +393,56 @@ jobs:
           done
           rm -- "$valid/registry/fixture.other.json" "$valid/sealed/fixture.other.age"
 
+          # Independent freshly-installed consumer contract: source producers
+          # must refuse two different credentials claiming the same hosted file,
+          # including nested file/directory collisions, before any mutation.
+          # The renderer must independently reject forged source and preserve
+          # both existing output bytes and the exact ownership manifest.
+          node --input-type=module - "$consumer/installed-file-placement" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { openStore } from '@red-cup-engineering/credential-custody-service/store';
+          const root = process.argv[2], path = join(root, 'store'), runtime = join(root, 'runtime'), host = 'collision-host';
+          mkdirSync(root, { recursive: true });
+          const store = openStore(path);
+          await store.initHost(host);
+          await store.put('first', 'INERT_INSTALLED_FIRST', {
+            holders: [host], consumers: [{ host, service: 'first-service', variable: 'FIRST_FILE', path: 'keys/shared.pem' }],
+          });
+          await store.put('second', 'INERT_INSTALLED_SECOND', { holders: [host], consumers: [] });
+          const registryPath = join(path, 'registry/second.json');
+          const sealedPath = join(path, 'sealed/second.age');
+          const beforeRegistry = readFileSync(registryPath), beforeSeal = readFileSync(sealedPath);
+          await assert.rejects(store.put('second', 'INERT_UNAUTHORIZED_ROTATION', {
+            consumers: [{ host, service: 'second-service', variable: 'SECOND_FILE', path: 'keys/shared.pem' }],
+          }), /conflicting file placement/u);
+          assert.throws(() => store.bind('second', {
+            host, service: 'second-service', variable: 'SECOND_FILE', path: 'keys/shared.pem/nested.pem',
+          }), /conflicting file placement/u);
+          assert.deepEqual(readFileSync(registryPath), beforeRegistry);
+          assert.deepEqual(readFileSync(sealedPath), beforeSeal);
+          await assert.rejects(store.get('first', 'foreign-host'), /does not hold/u);
+          store.bind('second', { host, service: 'second-service', variable: 'SECOND_FILE', path: 'keys/second.pem' });
+          await store.renderHost(host, runtime);
+          const output = readFileSync(join(runtime, 'keys/shared.pem'));
+          const manifest = readFileSync(join(runtime, '.credential-custody-render.json'));
+          const placedManifest = readFileSync(join(runtime, '.credential-custody-render-placed.json'));
+          const validRegistry = readFileSync(registryPath);
+          const corrupted = JSON.parse(validRegistry.toString('utf8'));
+          corrupted.consumers[0].path = 'keys/shared.pem';
+          writeFileSync(registryPath, JSON.stringify(corrupted, null, 2) + '\n');
+          await assert.rejects(store.renderHost(host, runtime), /two credentials are placed at/u,
+            'installed renderer independently rejects source corruption');
+          assert.deepEqual(readFileSync(join(runtime, 'keys/shared.pem')), output);
+          assert.deepEqual(readFileSync(join(runtime, '.credential-custody-render.json')), manifest);
+          assert.deepEqual(readFileSync(join(runtime, '.credential-custody-render-placed.json')), placedManifest);
+          writeFileSync(registryPath, validRegistry);
+          await store.renderHost(host, runtime);
+          assert.equal(readFileSync(join(runtime, 'keys/shared.pem'), 'utf8'), 'INERT_INSTALLED_FIRST');
+          assert.equal(readFileSync(join(runtime, 'keys/second.pem'), 'utf8'), 'INERT_INSTALLED_SECOND');
+          NODE
+
           # Installed-consumer regression: a file delivery cannot launder a
           # forged environment variable into a previously healthy generation.
           # The record and sealed value are real; only the consumer metadata
