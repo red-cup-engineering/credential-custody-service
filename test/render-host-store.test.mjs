@@ -600,3 +600,92 @@ test('host enrollment refuses malformed recipient registries before creating pri
   assert.equal(enrolled.created, true, 'valid first recovery enrollment remains supported');
   assert.equal(healthy.recipients().recovery.includes(enrolled.recipient), true);
 });
+
+test('new credential cannot claim another credential\'s installed placed output', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-placed-new-collision-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const selected = 'fixture-host', path = join(root, 'source'), store = openStore(path);
+  await store.initHost(selected);
+  await store.put('first', 'INERT_FIRST', {
+    holders: [selected], consumers: [{ host: selected, service: 'first-service', variable: 'FIRST_FILE', path: 'keys/shared.pem' }],
+  });
+  const firstCipher = readFileSync(join(path, 'sealed/first.age'));
+  const firstRecord = readFileSync(join(path, 'registry/first.json'));
+  await assert.rejects(store.put('second', 'INERT_SECOND', {
+    holders: [selected], consumers: [{ host: selected, service: 'second-service', variable: 'SECOND_FILE', path: 'keys/shared.pem' }],
+  }), /conflicting file placement/u, 'the second credential may not take the first credential\'s runtime filename');
+  assert.equal(existsSync(join(path, 'registry/second.json')), false, 'refusal must precede record creation');
+  assert.equal(existsSync(join(path, 'sealed/second.age')), false, 'refusal must precede encryption/publication');
+  assert.deepEqual(readFileSync(join(path, 'sealed/first.age')), firstCipher);
+  assert.deepEqual(readFileSync(join(path, 'registry/first.json')), firstRecord);
+});
+
+test('rotation cannot replace healthy ciphertext when its new placed path collides', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-placed-rotate-collision-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const selected = 'fixture-host', path = join(root, 'source'), runtime = join(root, 'runtime'), store = openStore(path);
+  await store.initHost(selected);
+  await store.put('first', 'INERT_FIRST', {
+    holders: [selected], consumers: [{ host: selected, service: 'fixture', variable: 'FIRST_PATH', path: 'keys/first.pem' }],
+  });
+  await store.put('second', 'INERT_SECOND', {
+    holders: [selected], consumers: [{ host: selected, service: 'fixture', variable: 'SECOND_PATH', path: 'keys/second.pem' }],
+  });
+  await store.renderHost(selected, runtime);
+  const baseline = {
+    second: readFileSync(join(path, 'sealed/second.age')),
+    record: readFileSync(join(path, 'registry/second.json')),
+    firstOutput: readFileSync(join(runtime, 'keys/first.pem')),
+    secondOutput: readFileSync(join(runtime, 'keys/second.pem')),
+    manifest: readFileSync(join(runtime, '.credential-custody-render.json')),
+    placedManifest: readFileSync(join(runtime, '.credential-custody-render-placed.json')),
+  };
+  await assert.rejects(store.put('second', 'INERT_ROTATED_BUT_NOT_ALLOWED', {
+    consumers: [{ host: selected, service: 'fixture', variable: 'SECOND_PATH', path: 'keys/first.pem' }],
+  }), /conflicting file placement/u, 'a conflicting output must be refused before rotation replaces sealed bytes');
+  assert.deepEqual(readFileSync(join(path, 'sealed/second.age')), baseline.second);
+  assert.deepEqual(readFileSync(join(path, 'registry/second.json')), baseline.record);
+  const good = await store.renderHost(selected, runtime);
+  assert.deepEqual(good.services, ['fixture']);
+  assert.deepEqual(readFileSync(join(runtime, 'keys/first.pem')), baseline.firstOutput);
+  assert.deepEqual(readFileSync(join(runtime, 'keys/second.pem')), baseline.secondOutput);
+  assert.deepEqual(readFileSync(join(runtime, '.credential-custody-render.json')), baseline.manifest);
+  assert.deepEqual(readFileSync(join(runtime, '.credential-custody-render-placed.json')), baseline.placedManifest);
+});
+
+test('binding refuses a file placed beneath an existing file and preserves its source', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-placed-nested-collision-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const selected = 'fixture-host', path = join(root, 'source'), store = openStore(path);
+  await store.initHost(selected);
+  await store.put('first', 'INERT_FIRST', {
+    holders: [selected], consumers: [{ host: selected, service: 'fixture', variable: 'FIRST_PATH', path: 'keys/fixture.pem' }],
+  });
+  await store.put('second', 'INERT_SECOND', { holders: [selected], consumers: [] });
+  const original = readFileSync(join(path, 'registry/second.json'));
+  assert.throws(() => store.bind('second', {
+    host: selected, service: 'another', variable: 'SECOND_PATH', path: 'keys/fixture.pem/private.pem',
+  }), /conflicting file placement/u, 'a file cannot simultaneously be an output and a parent directory');
+  assert.deepEqual(readFileSync(join(path, 'registry/second.json')), original);
+});
+
+test('same credential multi-service placed output and other-host independent placements remain healthy', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-placed-shared-valid-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, 'source'), store = openStore(path);
+  await store.initHost('fixture-one');
+  await store.initHost('fixture-two');
+  await store.put('first', 'INERT_FIRST', {
+    holders: ['fixture-one', 'fixture-two'],
+    consumers: [{ host: 'fixture-one', service: 'one', variable: 'FIRST_PATH', path: 'keys/shared.pem' },
+      { host: 'fixture-one', service: 'two', variable: 'ALSO_FIRST', path: 'keys/shared.pem' }],
+  });
+  await store.put('second', 'INERT_SECOND', {
+    holders: ['fixture-two'],
+    consumers: [{ host: 'fixture-two', service: 'two', variable: 'SECOND_PATH', path: 'keys/shared.pem' }],
+  });
+  assert.equal((await store.renderHost('fixture-one', join(root, 'one'))).files.length, 1);
+  assert.equal((await store.renderHost('fixture-two', join(root, 'two'))).files.length, 1);
+  assert.equal(readFileSync(join(root, 'one/keys/shared.pem'), 'utf8'), 'INERT_FIRST');
+  assert.equal(readFileSync(join(root, 'two/keys/shared.pem'), 'utf8'), 'INERT_SECOND');
+});
