@@ -19,11 +19,11 @@ const store = need('CREDENTIALS_STORE'), host = need('CREDENTIALS_HOST'), to = n
 // The services wait on this render: an unreachable origin renders what the checkout already holds.
 if (process.env.CREDENTIALS_PULL === '1') {
   // Never run Git against a misselected checkout, even before output pruning.
-  assertRenderableStore(store, host);
+  await assertRenderableStore(store, host);
   try { execFileSync('git', ['-C', store, 'pull', '-q', '--ff-only'], { stdio: ['ignore', 'inherit', 'inherit'], timeout: 60_000 }); }
   catch (error) { process.stderr.write(`render-host: pull failed, rendering the checkout as it stands: ${error.message.split('\n')[0]}\n`); }
 }
-assertRenderableStore(store, host);
+await assertRenderableStore(store, host);
 const opened = openStore(store, { create: false });
 // A pulled grant reaches its new holder without anyone running reseal: this host reseals what it holds whose
 // holders changed, and pushes so the new holder's next pull opens it. CREDENTIALS_RESEAL=0 turns it off.
