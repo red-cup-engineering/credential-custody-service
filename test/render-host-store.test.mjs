@@ -270,9 +270,15 @@ test('duplicate environment bindings must refuse without retiring a healthy gene
 
   // Even a syntactically valid source must not silently select the last
   // secret sharing the same systemd environment variable name.
-  await store.put('second', 'INERT_SECOND', {
-    holders: [host], consumers: [{ host, service: 'fixture', variable: 'DUPLICATE' }],
-  });
+  // A source author can no longer introduce the collision. Tamper with an
+  // existing valid sealed record to verify the receiving guard separately.
+  await store.put('second', 'INERT_SECOND', { holders: [host], consumers: [] });
+  const secondRecordPath = join(storePath, 'registry/second.json');
+  const corruptSource = consumer => {
+    const rec = JSON.parse(readFileSync(secondRecordPath, 'utf8'));
+    writeFileSync(secondRecordPath, JSON.stringify({ ...rec, consumers: [consumer] }, null, 2) + '\n');
+  };
+  corruptSource({ host, service: 'fixture', variable: 'DUPLICATE' });
   await assert.rejects(store.render(host, 'fixture'), /duplicate.*environment.*DUPLICATE|DUPLICATE.*already bound/u);
   let refused = cli();
   assert.notEqual(refused.status, 0);
@@ -284,9 +290,7 @@ test('duplicate environment bindings must refuse without retiring a healthy gene
 
   // A path binding also claims the environment variable. It must not
   // overwrite a secret just because it is backed by a different file.
-  await store.put('second', 'INERT_FILE', {
-    holders: [host], consumers: [{ host, service: 'fixture', variable: 'DUPLICATE', path: 'keys/fixture.pem' }],
-  });
+  corruptSource({ host, service: 'fixture', variable: 'DUPLICATE', path: 'keys/fixture.pem' });
   refused = cli();
   assert.notEqual(refused.status, 0);
   assert.equal(refused.stdout, '');

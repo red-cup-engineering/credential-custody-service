@@ -153,32 +153,52 @@ jobs:
           cp "$live/fixture-service.env" "$consumer/expected-kept"
           cp "$live/.credential-custody-render.json" "$consumer/expected-manifest"
 
-          # Exercise the genuinely installed producer with two separately
-          # sealed credentials claiming the same service EnvironmentFile key.
-          # The renderer must not allow silent last-assignment-wins, including
-          # when the competing credential is a file-path binding.
+          # Installed producer must refuse conflicting assignments without
+          # changing either the existing sealed value or its registry record.
+          # Separately, an externally corrupted registry must still fail closed
+          # through the installed renderer without withdrawing a prior output.
           printf 'INERT_COLLISION' | "$installed/credentials" --store "$valid" --host fixture-host \
             --holders fixture-host --kind token put fixture.other > "$consumer/other-put"
-          "$installed/credentials" --store "$valid" --host fixture-host \
-            --service fixture-service --variable FIXTURE_TOKEN bind fixture.other > "$consumer/other-bind"
+          cp "$valid/registry/fixture.other.json" "$consumer/expected-other-registry"
+          cp "$valid/sealed/fixture.other.age" "$consumer/expected-other-seal"
           for binding_kind in value file; do
+            bind_args=(--service fixture-service --variable FIXTURE_TOKEN)
             if [[ "$binding_kind" == file ]]; then
-              "$installed/credentials" --store "$valid" --host fixture-host \
-                --service fixture-service --variable FIXTURE_TOKEN --path keys/other.pem bind fixture.other > "$consumer/other-file-bind"
+              bind_args+=(--path keys/other.pem)
             fi
+            if "$installed/credentials" --store "$valid" --host fixture-host \
+              "${bind_args[@]}" bind fixture.other > "$consumer/other-bind-stdout" 2> "$consumer/other-bind-stderr"; then
+              echo "Installed producer accepted duplicate environment binding ($binding_kind)" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/other-bind-stdout" ]]
+            grep -Fq -- 'duplicate environment binding FIXTURE_TOKEN' "$consumer/other-bind-stderr"
+            cmp -- "$valid/registry/fixture.other.json" "$consumer/expected-other-registry"
+            cmp -- "$valid/sealed/fixture.other.age" "$consumer/expected-other-seal"
+            node --input-type=module - "$valid/registry/fixture.other.json" "$binding_kind" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const [path, kind] = process.argv.slice(2);
+          const record = JSON.parse(readFileSync(path, 'utf8'));
+          record.consumers = [{
+            host: 'fixture-host', service: 'fixture-service', variable: 'FIXTURE_TOKEN',
+            ...(kind === 'file' ? { path: 'keys/other.pem' } : {})
+          }];
+          writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+          NODE
             if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
               "$installed/credentials-render-host" > "$consumer/collision-stdout" 2> "$consumer/collision-stderr"; then
-              echo "Installed renderer admitted duplicate service environment binding ($binding_kind)" >&2
+              echo "Installed renderer admitted corrupted duplicate service binding ($binding_kind)" >&2
               exit 1
             fi
             [[ ! -s "$consumer/collision-stdout" ]]
-            grep -Eq 'duplicate environment binding FIXTURE_TOKEN' "$consumer/collision-stderr"
+            grep -Fq -- 'duplicate environment binding FIXTURE_TOKEN' "$consumer/collision-stderr"
             if grep -Fq -- 'INERT_COLLISION' "$consumer/collision-stderr"; then
-              echo "Installed renderer disclosed another credential while refusing duplicate binding" >&2
+              echo "Installed renderer disclosed a credential while refusing a duplicate binding" >&2
               exit 1
             fi
             cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
             cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+            cp "$consumer/expected-other-registry" "$valid/registry/fixture.other.json"
           done
           rm -- "$valid/registry/fixture.other.json" "$valid/sealed/fixture.other.age"
 

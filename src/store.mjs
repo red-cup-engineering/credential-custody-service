@@ -131,6 +131,30 @@ export function openStore(dir, { create = true } = {}) {
     }
     return admitted;
   });
+  // Refuse authoring a source that will later fail rendering. Compare the
+  // exact host/service/variable claims of the candidate against all other
+  // records, but allow a damaged record to be repaired by replacing its own
+  // bindings. The original renderer still independently rejects external
+  // registry edits and races at receiving time.
+  const assertNoEnvironmentCollisions = (id, candidate) => {
+    const claims = new Map();
+    const claimKey = (consumer) => JSON.stringify([consumer.host, consumer.service, consumer.variable]);
+    const error = (consumer) => new Error('duplicate environment binding ' + consumer.variable
+      + ' for service ' + consumer.service + ' on host ' + consumer.host);
+    for (const consumer of candidate.consumers ?? []) {
+      if (!consumer.variable) continue;
+      const key = claimKey(consumer);
+      if (claims.has(key)) throw error(consumer);
+      claims.set(key, consumer);
+    }
+    if (!claims.size) return;
+    for (const existing of records()) {
+      if (existing.id === id) continue;
+      for (const consumer of existing.consumers ?? []) {
+        if (consumer.variable && claims.has(claimKey(consumer))) throw error(consumer);
+      }
+    }
+  };
   const sealFor = (holders) => {
     const r = recipients(), keys = [...holders.map((h) => { if (!r.hosts[h]) throw new Error(`host ${h} has no recipient in recipients.json`); return r.hosts[h]; }), ...r.recovery];
     return [...new Set(keys)];
@@ -170,6 +194,7 @@ export function openStore(dir, { create = true } = {}) {
       // A writer must never mint source records that the renderer then refuses.
       // Admit the complete record BEFORE sealing/replacing a valid earlier value.
       requireRecord(recordPath(id), id, next);
+      assertNoEnvironmentCollisions(id, next);
       const keys = sealFor(next.holders);
       writeAtomic(join(dir, 'sealed', `${id}.age`), await sealTo(value, keys));
       // The public recipients this value is sealed to, so a holder can see when the holders changed under it.
@@ -267,6 +292,7 @@ export function openStore(dir, { create = true } = {}) {
       serviceName(service);
       const consumer = { host, service, variable, ...(path === undefined ? {} : { path: placedPath(path) }) };
       const consumers = [...(rec.consumers ?? []).filter((c) => !(c.host === host && c.service === service && c.variable === variable)), consumer];
+      assertNoEnvironmentCollisions(id, { ...rec, consumers });
       writeAtomic(recordPath(id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
       return { id, ...consumer };
     },
@@ -283,6 +309,7 @@ export function openStore(dir, { create = true } = {}) {
       const consumers = rec.consumers ?? [], hit = consumers.find((c) => c.host === host && c.service === service && (c.file || c.path));
       if (!hit) throw new Error(`${id} has no file consumer ${service} on ${host}`);
       hit.variable = variable;
+      assertNoEnvironmentCollisions(id, { ...rec, consumers });
       writeAtomic(recordPath(id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
       return { id, host, service, variable };
     },
