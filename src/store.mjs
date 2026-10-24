@@ -15,7 +15,7 @@
  * or authorize anything.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
 import { placedPath, serviceName, environmentAssignment, renderHost as renderHostCredentials } from './render-host.mjs';
@@ -367,9 +367,36 @@ export function openStore(dir, { create = true } = {}) {
       const rec = record(from);
       if (!rec) throw new Error(`no credential ${from}`);
       if (record(to)) throw new Error(`credential ${to} already exists`);
-      writeAtomic(recordPath(to), `${JSON.stringify({ ...rec, id: to }, null, 2)}\n`);
-      renameSync(join(dir, 'sealed', `${from}.age`), join(dir, 'sealed', `${to}.age`));
+      const source = join(dir, 'sealed', `${from}.age`), destination = join(dir, 'sealed', `${to}.age`);
+      // A missing record is NOT evidence that the corresponding encrypted
+      // bytes are disposable. A partial move or recovery may have left an
+      // orphan payload. Never rename over it, even after an enrollment race.
+      // Hardlinking to an unoccupied name is atomic and fails with EEXIST
+      // for existing files *and* dangling symlinks. Keep the original pair
+      // intact until the new registry entry has been durably written.
+      let sourceInfo;
+      try { sourceInfo = lstatSync(source); }
+      catch (error) { throw new Error(`sealed credential source ${source} unavailable`, { cause: error }); }
+      if (!sourceInfo.isFile() || !sourceInfo.size) {
+        throw new Error(`sealed credential source ${source} is not a nonempty regular file`);
+      }
+      try { linkSync(source, destination); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw new Error(`sealed credential destination ${destination} already exists; reconcile custody before renaming`, { cause: error });
+        throw error;
+      }
+      try {
+        writeAtomic(recordPath(to), `${JSON.stringify({ ...rec, id: to }, null, 2)}\n`);
+      } catch (error) {
+        // No new registry entry was committed: release our newly created
+        // ciphertext link while retaining the entire original source.
+        unlinkSync(destination);
+        throw error;
+      }
+      // If either removal fails, the new credential remains decryptable;
+      // repair leftover old registry/seal evidence explicitly on retry.
       unlinkSync(recordPath(from));
+      unlinkSync(source);
       return { from, to };
     },
 
