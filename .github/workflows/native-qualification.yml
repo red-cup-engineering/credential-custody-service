@@ -51,8 +51,8 @@ jobs:
           # Exercise the shipped executable against the production regression:
           # a missing source must preserve a previously managed runtime generation.
           mkdir -p "$consumer/live"
-          printf 'INERT_PREVIOUS_RENDER\\n' > "$consumer/live/kept.env"
-          printf '{"version":1,"host":"fixture-host","state":"complete","outputs":["kept.env"]}\\n' > "$consumer/live/.credential-custody-render.json"
+          echo 'INERT_PREVIOUS_RENDER' > "$consumer/live/kept.env"
+          echo '{"version":1,"host":"fixture-host","state":"complete","outputs":["kept.env"]}' > "$consumer/live/.credential-custody-render.json"
           cp "$consumer/live/kept.env" "$consumer/expected-kept"
           cp "$consumer/live/.credential-custody-render.json" "$consumer/expected-manifest"
           if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$consumer/live" \
