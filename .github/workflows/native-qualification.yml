@@ -178,3 +178,42 @@ jobs:
           path: ${{ runner.temp }}/credential-custody-qualified/
           if-no-files-found: error
           retention-days: 7
+
+  receive-qualified-package:
+    needs: native-node-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read back the same exact source selection, not a new main branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, pinned
+        with:
+          persist-credentials: false
+      - name: Fetch immutable package from the original qualifier job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4, pinned
+        with:
+          name: credential-custody-qualified-${{ github.sha }}
+          path: ${{ runner.temp }}/received-credential-custody
+      - name: Independently receive exact tarball, checksum and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/received-credential-custody"
+          sha256sum -c SHA256SUMS
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          const git = (...args) => execFileSync('git', ['-C', process.env.GITHUB_WORKSPACE, ...args], { encoding: 'utf8' }).trim();
+          const receipt = JSON.parse(readFileSync('qualification.json', 'utf8'));
+          const checksumLine = readFileSync('SHA256SUMS', 'utf8').trim();
+          assert.equal(receipt.kind, 'credential-custody-tested-release-candidate');
+          assert.equal(receipt.version, 1);
+          assert.equal(receipt.sourceRepository, process.env.GITHUB_REPOSITORY);
+          assert.equal(receipt.testedCommit, git('rev-parse', 'HEAD'));
+          assert.equal(receipt.testedTree, git('rev-parse', 'HEAD^{tree}'));
+          assert.equal(receipt.workflowRunId, process.env.GITHUB_RUN_ID);
+          assert.equal(receipt.artifact, 'credential-custody.tgz');
+          assert.equal(receipt.artifactSha256, checksumLine.slice(0, 64));
+          assert.match(receipt.artifactSha256, /^[a-f0-9]{64}$/u);
+          assert.equal(receipt.packageVersion, JSON.parse(readFileSync(process.env.GITHUB_WORKSPACE + '/package.json', 'utf8')).version);
+          NODE
