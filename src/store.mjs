@@ -36,12 +36,16 @@ const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path
 // overwrite a file outside credential custody before the atomic rename.
 // Exclusive, unique staging also prevents overlapping writers from sharing
 // an intermediate file (it does not by itself serialize registry updates).
-const writeAtomic = (path, text, mode = 0o644) => {
+const writeAtomic = (path, text, mode = 0o644, { exclusive = false } = {}) => {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     writeFileSync(temporary, text, { mode, flag: 'wx' });
     chmodSync(temporary, mode);
-    renameSync(temporary, path);
+    // New credential IDs must not replace orphaned sealed evidence: publish
+    // through an exclusive hard link, which also rejects dangling symlinks.
+    // Existing IDs may atomically replace their recorded ciphertext.
+    if (exclusive) linkSync(temporary, path);
+    else renameSync(temporary, path);
   } finally {
     try { unlinkSync(temporary); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -187,7 +191,7 @@ export function openStore(dir, { create = true } = {}) {
 
     /** Register (or update) a credential and seal its value to its holders. */
     async put(id, value, fields = {}) {
-      const now = new Date().toISOString(), old = record(id) ?? {};
+      const now = new Date().toISOString(), prior = record(id), old = prior ?? {};
       const next = { id, provider: null, kind: 'other', owner: null, purpose: null, holders: [], consumers: [], rotateEveryDays: null, createdAt: now, ...old, ...fields, fingerprint: fingerprint(value), rotatedAt: old.fingerprint && old.fingerprint !== fingerprint(value) ? now : (old.rotatedAt ?? now) };
       if (!KINDS.includes(next.kind)) throw new TypeError(`kind ${next.kind} is not one of ${KINDS.join(', ')}`);
       if (!Array.isArray(next.holders) || !next.holders.length) throw new TypeError(`credential ${id} needs at least one holder host`);
@@ -196,7 +200,14 @@ export function openStore(dir, { create = true } = {}) {
       requireRecord(recordPath(id), id, next);
       assertNoEnvironmentCollisions(id, next);
       const keys = sealFor(next.holders);
-      writeAtomic(join(dir, 'sealed', `${id}.age`), await sealTo(value, keys));
+      const sealedPath = join(dir, 'sealed', `${id}.age`);
+      try { writeAtomic(sealedPath, await sealTo(value, keys), 0o644, { exclusive: prior === null }); }
+      catch (error) {
+        if (prior === null && error.code === 'EEXIST') {
+          throw new Error(`sealed credential destination ${sealedPath} already exists; reconcile orphaned custody before writing`, { cause: error });
+        }
+        throw error;
+      }
       // The public recipients this value is sealed to, so a holder can see when the holders changed under it.
       next.sealedTo = [...keys].sort();
       writeAtomic(recordPath(id), `${JSON.stringify(next, null, 2)}\n`);
