@@ -19,6 +19,25 @@ export function serviceName(value) {
   return value;
 }
 
+
+/**
+ * Encode one systemd EnvironmentFile assignment without changing the value
+ * seen by its consumer. In unquoted values systemd strips outer whitespace
+ * and treats backslashes as escapes; in double-quoted values, JSON's escapes
+ * for quotes and backslashes are understood by the systemd parser.
+ * Credentials with line/control characters belong in file delivery instead.
+ */
+export function environmentAssignment(variable, value) {
+  if (typeof variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(variable)) {
+    throw new TypeError('invalid systemd environment variable name');
+  }
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f\uFEFF]/u.test(value)) {
+    throw new TypeError('systemd environment assignment requires a single-line value without control characters');
+  }
+  const serialized = /[\\'"\s]/u.test(value) ? JSON.stringify(value) : value;
+  return variable + '=' + serialized;
+}
+
 /**
  * A file credential's place in the runtime directory, where the code that reads it looks (keys/kalshi/<name>.pem,
  * fastmail/<account>.json): relative, at most six filename components, none hidden, never under files/ and never
@@ -116,7 +135,7 @@ export async function renderHost(store, host, dir) {
     if (consumer.variable) {
       const service = serviceName(consumer.service);
       const paths = services.get(service) ?? [];
-      if (isFile) paths.push(`${consumer.variable}=${join(dir, output)}`);
+      if (isFile) paths.push(environmentAssignment(consumer.variable, join(dir, output)));
       services.set(service, paths);
     }
   }
