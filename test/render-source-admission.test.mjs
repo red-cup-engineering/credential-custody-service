@@ -222,7 +222,7 @@ test('malformed file-bound variables cannot masquerade as safe file-only deliver
   await opened.put('inert-file-credential', 'INERT_TEST_VALUE', { holders: [host], consumers: [] });
   const record = join(f.store, 'registry', 'inert-file-credential.json');
   const bad = [
-    ['newline injection', { host, file: '/example/key.pem', service: 'fixture-service', variable: 'TOKEN\\nINJECTED' }],
+    ['newline injection', { host, file: '/example/key.pem', service: 'fixture-service', variable: 'TOKEN\nINJECTED' }],
     ['assignment injection', { host, file: '/example/key.pem', service: 'fixture-service', variable: 'TOKEN=FORGED' }],
     ['missing service for bound variable', { host, file: '/example/key.pem', variable: 'TOKEN_PATH' }],
     ['unsafe service name', { host, file: '/example/key.pem', service: '../outside', variable: 'TOKEN_PATH' }],
@@ -230,7 +230,7 @@ test('malformed file-bound variables cannot masquerade as safe file-only deliver
     ['empty bound variable', { host, file: '/example/key.pem', service: 'fixture-service', variable: '' }],
   ];
   for (const [label, consumer] of bad) {
-    writeFileSync(record, JSON.stringify({ id: 'inert-file-credential', holders: [host], consumers: [consumer] }) + '\\n');
+    writeFileSync(record, JSON.stringify({ id: 'inert-file-credential', holders: [host], consumers: [consumer] }) + '\n');
     for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
       refuseWithoutPruning(result, f.store, f.runtime, manifest, /registry.*inert-file-credential[.]json.*consumers/u);
     }
