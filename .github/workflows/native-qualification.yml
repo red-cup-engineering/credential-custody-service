@@ -253,6 +253,31 @@ jobs:
           cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
           rm -- "$valid/registry/zero-holders.json"
 
+          # Missing bytes for a complete, explicitly zero-consumer registry
+          # entry are corrupted custody, not authorization to retire a prior
+          # healthy generation. The packed binary, not local source, must
+          # refuse even though that record needs no value for current output.
+          cp "$valid/registry/fixture.token.json" "$consumer/pre-missing-seal-record"
+          node --input-type=module - "$valid/registry/fixture.token.json" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const path = process.argv[2];
+          const record = JSON.parse(readFileSync(path, 'utf8'));
+          record.consumers = [];
+          writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+          NODE
+          mv "$valid/sealed/fixture.token.age" "$consumer/held-payload-for-refusal"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/missing-payload-stdout" 2> "$consumer/missing-payload-stderr"; then
+            echo "Packaged renderer retired healthy output despite absent sealed payload" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/missing-payload-stdout" ]]
+          grep -Fq -- 'sealed/fixture.token.age' "$consumer/missing-payload-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          mv "$consumer/held-payload-for-refusal" "$valid/sealed/fixture.token.age"
+          cp "$consumer/pre-missing-seal-record" "$valid/registry/fixture.token.json"
+
           if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
             "$installed/credentials-render-host" > "$consumer/stdout" 2> "$consumer/stderr"; then
             echo "Packaged renderer admitted missing credential source" >&2
