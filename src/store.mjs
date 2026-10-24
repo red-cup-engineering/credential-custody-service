@@ -213,25 +213,36 @@ export function openStore(dir, { create = true } = {}) {
   // records, but allow a damaged record to be repaired by replacing its own
   // bindings. The original renderer still independently rejects external
   // registry edits and races at receiving time.
-  const assertNoEnvironmentCollisions = (id, candidate) => {
-    const claims = new Map();
-    const claimKey = (consumer) => JSON.stringify([consumer.host, consumer.service, consumer.variable]);
-    const error = (consumer) => new Error('duplicate environment binding ' + consumer.variable
-      + ' for service ' + consumer.service + ' on host ' + consumer.host);
-    for (const consumer of candidate.consumers ?? []) {
-      if (!consumer.variable) continue;
-      const key = claimKey(consumer);
-      if (claims.has(key)) throw error(consumer);
-      claims.set(key, consumer);
-    }
-    if (!claims.size) return;
-    for (const existing of records()) {
-      if (existing.id === id) continue;
-      for (const consumer of existing.consumers ?? []) {
-        if (consumer.variable && claims.has(claimKey(consumer))) throw error(consumer);
+  // A render root belongs to a single host. Distinct credentials may not
+  // claim the same placed output, nor make a file another output's parent.
+  // This producer preflight complements the renderer's independent receiving
+  // checks; it cannot grant or alter any host's credential access.
+  const assertConsumerClaims = (sourceRecords) => {
+    const environment = new Set(), outputs = [];
+    for (const rec of sourceRecords) for (const consumer of rec.consumers ?? []) {
+      if (consumer.variable) {
+        const key = JSON.stringify([consumer.host, consumer.service, consumer.variable]);
+        if (environment.has(key)) throw new Error('duplicate environment binding ' + consumer.variable
+          + ' for service ' + consumer.service + ' on host ' + consumer.host);
+        environment.add(key);
       }
+      if (!consumer.file && !consumer.path) continue;
+      const output = consumer.path ?? `files/${rec.id}`;
+      for (const previous of outputs) {
+        if (previous.host !== consumer.host) continue;
+        const same = previous.output === output;
+        if ((same && previous.id !== rec.id)
+            || (!same && (previous.output.startsWith(output + '/')
+              || output.startsWith(previous.output + '/')))) {
+          throw new Error('conflicting file placement ' + output + ' for credential ' + rec.id
+            + ' on host ' + consumer.host);
+        }
+      }
+      outputs.push({ host: consumer.host, id: rec.id, output });
     }
   };
+  const assertNoEnvironmentCollisions = (id, candidate) =>
+    assertConsumerClaims([...records().filter(existing => existing.id !== id), candidate]);
   const sealFor = (holders) => {
     const r = recipients(), keys = [...holders.map((h) => { if (!r.hosts[h]) throw new Error(`host ${h} has no recipient in recipients.json`); return r.hosts[h]; }), ...r.recovery];
     return [...new Set(keys)];
@@ -384,16 +395,25 @@ export function openStore(dir, { create = true } = {}) {
      * its path relative to that root.
      */
     placeFiles(host, root) {
-      const base = `${root.replace(/\/+$/u, '')}/`, placed = [];
-      for (const rec of records()) {
+      const base = `${root.replace(/\/+$/u, '')}/`, placed = [], rewritten = [];
+      const proposed = records().map((rec) => {
         let changed = false;
         const consumers = (rec.consumers ?? []).map((c) => {
           if (c.host !== host || !c.file || c.path || !c.file.startsWith(base)) return c;
-          changed = true; placed.push({ id: rec.id, service: c.service, path: placedPath(c.file.slice(base.length)) });
-          return { ...c, path: c.file.slice(base.length) };
+          changed = true;
+          const path = placedPath(c.file.slice(base.length));
+          placed.push({ id: rec.id, service: c.service, path });
+          return { ...c, path };
         });
-        if (changed) writeAtomic(recordPath(rec.id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
-      }
+        if (!changed) return rec;
+        const next = { ...rec, consumers };
+        rewritten.push(next);
+        return next;
+      });
+      // Preflight the complete intended generation before rewriting any
+      // legacy registry source; a later conflict cannot leave half converted.
+      assertConsumerClaims(proposed);
+      for (const rec of rewritten) writeAtomic(recordPath(rec.id), `${JSON.stringify(rec, null, 2)}\n`);
       return placed;
     },
 
