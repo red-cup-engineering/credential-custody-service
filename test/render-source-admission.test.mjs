@@ -389,3 +389,42 @@ test('invalid holder or consumer hosts never turn corrupted custody into an auth
   assert.equal(restored.status, 0, restored.stderr, 'valid host claims continue to render');
   assert.deepEqual(JSON.parse(restored.stdout).services, ['example-service']);
 });
+
+test('resolved registry symlink cannot borrow a healthy-looking record to retire live credentials', async t => {
+  const f = fixture(t);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  await opened.put('claimed', 'INERT_CLAIMED_VALUE', {
+    holders: [host],
+    consumers: [{ host, service: 'example-service', variable: 'EXAMPLE_TOKEN' }],
+  });
+  const first = runUnit(f.store, f.runtime);
+  assert.equal(first.status, 0, first.stderr);
+  const environmentFile = join(f.runtime, 'example-service.env');
+  const manifestFile = join(f.runtime, '.credential-custody-render.json');
+  const priorEnv = readFileSync(environmentFile);
+  const priorManifest = readFileSync(manifestFile);
+  const recordPath = join(f.store, 'registry/claimed.json');
+  const source = readFileSync(recordPath);
+  const foreign = join(f.root, 'external-registry.json');
+  const forged = { ...JSON.parse(source.toString('utf8')), consumers: [] };
+  writeFileSync(foreign, JSON.stringify(forged) + '\n');
+  rmSync(recordPath);
+  symlinkSync(foreign, recordPath);
+
+  for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+    assert.notEqual(result.status, 0, 'resolved registry symlinks are not original source evidence');
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /registry.*claimed[.]json.*(symlink|regular file|unavailable)/iu);
+    assert.equal(result.stderr.includes('INERT_CLAIMED_VALUE'), false);
+    assert.deepEqual(readFileSync(environmentFile), priorEnv, 'prior rendered secret survives');
+    assert.deepEqual(readFileSync(manifestFile), priorManifest, 'prior ownership survives');
+    assert.equal(readFileSync(foreign, 'utf8'), JSON.stringify(forged) + '\n',
+      'external registry target is never repaired or changed');
+  }
+  await assert.rejects(opened.renderHost(host, f.runtime), /registry.*claimed[.]json.*(symlink|regular file|unavailable)/iu);
+  rmSync(recordPath);
+  writeFileSync(recordPath, source);
+  const repaired = runUnit(f.store, f.runtime);
+  assert.equal(repaired.status, 0, repaired.stderr, 'restored direct registry provenance renders');
+});
