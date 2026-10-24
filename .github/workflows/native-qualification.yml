@@ -72,7 +72,7 @@ jobs:
           assert.deepEqual(status.services, ['fixture-service']);
           assert.deepEqual(status.files, []);
           const output = join(live, 'fixture-service.env');
-          assert.equal(readFileSync(output, 'utf8'), 'FIXTURE_TOKEN=INERT_FIXTURE_VALUE\\n');
+          assert.equal(readFileSync(output, 'utf8'), 'FIXTURE_TOKEN=INERT_FIXTURE_VALUE\n');
           assert.equal(statSync(output).mode & 0o077, 0, 'rendered env must be private');
           const manifest = JSON.parse(readFileSync(join(live, '.credential-custody-render.json'), 'utf8'));
           assert.equal(manifest.host, 'fixture-host');
