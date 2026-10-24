@@ -128,7 +128,16 @@ export function openStore(dir, { create = true } = {}) {
     /** Create this host's identity (once) and record its public recipient. */
     async initHost(host, { recovery = false } = {}) {
       const path = identityPath(host);
-      if (existsSync(path)) return { host, recipient: await recipientOf(identity(host)), created: false };
+      const prior = recipients();
+      if (existsSync(path)) {
+        const recipient = await recipientOf(identity(host));
+        const acknowledged = recovery ? prior.recovery?.includes(recipient) : prior.hosts?.[host] === recipient;
+        if (!acknowledged) throw new Error(`host ${host} identity/recipient custody mismatch; repair registration explicitly`);
+        return { host, recipient, created: false };
+      }
+      if (Object.hasOwn(prior.hosts ?? {}, host)) {
+        throw new Error(`host ${host} has a recipient but no local identity; repair custody explicitly`);
+      }
       const id = await generateIdentity(), recipient = await recipientOf(id);
       writeAtomic(path, `${id}\n`, 0o600);
       const r = recipients();
