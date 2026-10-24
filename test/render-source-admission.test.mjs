@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore } from '../src/store.mjs';
@@ -109,4 +109,21 @@ test('missing sealed, registry, host identity and recipients never withdraw a pr
   const healthy = runUnit(f.store, join(f.root, 'empty-valid-runtime'));
   assert.equal(healthy.status, 0, healthy.stderr);
   assert.deepEqual(JSON.parse(healthy.stdout).services, [], 'an authenticated empty store is legitimately empty');
+});
+
+test('unreadable sealed source is not a valid empty store and must preserve earlier output', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  const sealed = join(f.store, 'sealed');
+  chmodSync(sealed, 0o000);
+  try {
+    for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+      refuseWithoutPruning(result, f.store, f.runtime, manifest, /unavailable: .*sealed.*(unreadable|EACCES)/u);
+    }
+  } finally {
+    chmodSync(sealed, 0o700);
+  }
+  const healthy = runUnit(f.store, join(f.root, 'verified-valid'));
+  assert.equal(healthy.status, 0, healthy.stderr);
 });
