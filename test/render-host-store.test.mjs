@@ -304,3 +304,43 @@ test('duplicate environment bindings must refuse without retiring a healthy gene
   assert.match(readFileSync(envFile, 'utf8'), /SECOND_FILE=/u);
   assert.equal(readFileSync(join(runtime, 'keys/fixture.pem'), 'utf8'), 'INERT_FILE');
 });
+
+
+test('credential producers reject colliding service-variable grants before source mutation', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-producer-collision-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
+  const store = openStore(storePath);
+  await store.initHost(host);
+  await store.put('first', 'INERT_FIRST', {
+    holders: [host], consumers: [{ host, service: 'fixture', variable: 'ALREADY_USED' }],
+  });
+  await store.put('second', 'INERT_SECOND', { holders: [host], consumers: [] });
+  await store.put('file', 'INERT_FILE', {
+    holders: [host], consumers: [{ host, service: 'fixture', file: '/inert/fixture.pem' }],
+  });
+  const snapshot = id => readFileSync(join(storePath, 'registry', id + '.json'));
+  const sealed = id => readFileSync(join(storePath, 'sealed', id + '.age'));
+  const secondRecord = snapshot('second'), secondCipher = sealed('second');
+  const fileRecord = snapshot('file');
+
+  assert.throws(() => store.bind('second', { host, service: 'fixture', variable: 'ALREADY_USED' }),
+    /duplicate environment binding ALREADY_USED/u, 'bind must not poison valid source');
+  assert.deepEqual(snapshot('second'), secondRecord, 'refused bind retains the existing registry');
+  await assert.rejects(store.put('second', 'INERT_ROTATED', {
+    holders: [host], consumers: [{ host, service: 'fixture', variable: 'ALREADY_USED' }],
+  }), /duplicate environment binding ALREADY_USED/u,
+  'put must reject a collision before replacing the previous sealed value');
+  assert.deepEqual(snapshot('second'), secondRecord, 'refused put retains the prior record');
+  assert.deepEqual(sealed('second'), secondCipher, 'refused put retains the prior sealed credential');
+  assert.throws(() => store.bindFile('file', { host, service: 'fixture', variable: 'ALREADY_USED' }),
+    /duplicate environment binding ALREADY_USED/u, 'file-backed binding must not replace an env credential');
+  assert.deepEqual(snapshot('file'), fileRecord, 'refused file bind retains the registry');
+
+  store.bind('second', { host, service: 'fixture', variable: 'DISTINCT' });
+  const accepted = await store.renderHost(host, runtime);
+  assert.deepEqual(accepted.services, ['fixture']);
+  const env = readFileSync(join(runtime, 'fixture.env'), 'utf8');
+  assert.match(env, /ALREADY_USED=INERT_FIRST/u);
+  assert.match(env, /DISTINCT=INERT_SECOND/u);
+});
