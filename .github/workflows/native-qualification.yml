@@ -22,3 +22,35 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Exercise original native functional, failure and security regressions
         run: npm test
+      - name: Qualify deterministic packaged release candidate and installed refusal
+        shell: bash
+        run: |
+          set -euo pipefail
+          first="$(mktemp -d)"
+          second="$(mktemp -d)"
+          consumer="$(mktemp -d)"
+          npm pack --offline --ignore-scripts --pack-destination "$first" --silent
+          npm pack --offline --ignore-scripts --pack-destination "$second" --silent
+          shopt -s nullglob
+          a=("$first"/*.tgz)
+          b=("$second"/*.tgz)
+          [[ ${#a[@]} -eq 1 && ${#b[@]} -eq 1 ]]
+          cmp -- "${a[0]}" "${b[0]}"
+          tar -tzf "${a[0]}" > "$consumer/packed-files"
+          for path in package.json scripts/render-host.mjs scripts/credentials.mjs src/store.mjs src/render-source-admission.mjs; do
+            grep -Fqx -- "package/$path" "$consumer/packed-files"
+          done
+          if grep -Eq '^package/(data/|hosts/|node_modules/|\.env)' "$consumer/packed-files"; then
+            echo "Unexpected private or runtime material in distributable" >&2
+            exit 1
+          fi
+          npm install --offline --ignore-scripts --no-audit --no-fund --prefix "$consumer" "${a[0]}"
+          cd "$consumer"
+          node --input-type=module -e "const { openStore } = await import('@red-cup-engineering/credential-custody-service/store'); if (typeof openStore !== 'function') process.exit(1)"
+          if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$consumer/live" \
+            ./node_modules/.bin/credentials-render-host > "$consumer/stdout" 2> "$consumer/stderr"; then
+            echo "Packaged renderer admitted missing credential source" >&2
+            exit 1
+          fi
+          [[ ! -e "$consumer/missing-original" && ! -e "$consumer/live" && ! -s "$consumer/stdout" ]]
+          grep -Fq -- "$consumer/missing-original" "$consumer/stderr"
