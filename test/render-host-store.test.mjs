@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -75,6 +75,62 @@ test('re-enrolling an existing host returns its original public recipient, not a
   assert.equal(repeated.recipient, enrolled.recipient);
   assert.deepEqual(readFileSync(join(path, 'hosts', selectedHost + '.identity')), identityBefore);
   assert.deepEqual(readFileSync(join(path, 'recipients.json')), recipientsBefore);
+});
+
+
+
+test('host enrollment refuses traversal and invalid host labels before changing identity or recipients', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-host-label-refusal-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, 'store'), opened = openStore(path);
+  const escaped = join(root, 'escaped.identity');
+  writeFileSync(escaped, 'ORIGINAL_INERT_SENTINEL');
+  for (const unsafeHost of ['../../escaped', '../escaped', 'invalid/name', 'invalid\\\\name', 'bad\\nname', 'bad\\rname', '', '..', 'bad host', 'UPPERCASE']) {
+    await assert.rejects(opened.initHost(unsafeHost), /host.*(name|label)|invalid host/u, unsafeHost);
+    const run = spawnSync(process.execPath, [
+      new URL('../scripts/credentials.mjs', import.meta.url).pathname,
+      '--store', path, '--host', unsafeHost, 'init-host',
+    ], { encoding: 'utf8' });
+    assert.notEqual(run.status, 0, 'CLI must also refuse invalid host labels');
+    assert.equal(run.stdout, '', 'CLI must not claim enrollment');
+    assert.equal(readFileSync(escaped, 'utf8'), 'ORIGINAL_INERT_SENTINEL');
+    assert.equal(existsSync(join(path, 'recipients.json')), false, 'invalid host must not register recipients');
+    assert.deepEqual(readdirSync(join(path, 'hosts')), [], 'invalid host must not mint an identity');
+  }
+  const healthy = await opened.initHost('fixture-host');
+  assert.equal(healthy.created, true);
+  assert.match(healthy.recipient, /^age1[0-9a-z]+$/u);
+});
+
+test('host enrollment refuses interrupted or mismatched custody instead of silently granting new identity', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-host-custody-refusal-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, 'store'), selectedHost = 'fixture-host', opened = openStore(path);
+  const created = await opened.initHost(selectedHost);
+  const identityPath = join(path, 'hosts', selectedHost + '.identity');
+  const recipientsPath = join(path, 'recipients.json');
+  const identity = readFileSync(identityPath, 'utf8');
+  const recipients = readFileSync(recipientsPath, 'utf8');
+
+  rmSync(recipientsPath); // interruption between private identity and recipient registration
+  await assert.rejects(opened.initHost(selectedHost), /recipient|custody|incomplete|mismatch/u);
+  assert.equal(readFileSync(identityPath, 'utf8'), identity);
+  assert.equal(existsSync(recipientsPath), false);
+
+  writeFileSync(recipientsPath, JSON.stringify({ hosts: { [selectedHost]: 'age1forged' }, recovery: [] }));
+  const mismatched = readFileSync(recipientsPath, 'utf8');
+  await assert.rejects(opened.initHost(selectedHost), /recipient|custody|mismatch/u);
+  assert.equal(readFileSync(identityPath, 'utf8'), identity);
+  assert.equal(readFileSync(recipientsPath, 'utf8'), mismatched);
+
+  writeFileSync(recipientsPath, recipients);
+  rmSync(identityPath); // a pre-existing grant must not be overwritten with fresh private key
+  await assert.rejects(opened.initHost(selectedHost), /recipient|custody|identity|mismatch/u);
+  assert.equal(existsSync(identityPath), false);
+  assert.equal(readFileSync(recipientsPath, 'utf8'), recipients);
+
+  // The original, uncorrupted enrollment remains valid and idempotent.
+  assert.match(created.recipient, /^age1[0-9a-z]+$/u);
 });
 
 
