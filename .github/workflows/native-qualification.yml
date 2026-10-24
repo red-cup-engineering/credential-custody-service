@@ -84,6 +84,22 @@ jobs:
           # missing selected source without withdrawing that healthy generation.
           cp "$live/fixture-service.env" "$consumer/expected-kept"
           cp "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+
+          # A complete-looking, identity-valid source with unreadable sealed/
+          # must not be treated as an intentionally empty authorized source.
+          # This uses the genuinely packed-and-installed executable.
+          chmod 000 "$valid/sealed"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/unreadable-stdout" 2> "$consumer/unreadable-stderr"; then
+            echo "Packaged renderer admitted unreadable sealed credential source" >&2
+            exit 1
+          fi
+          chmod 700 "$valid/sealed"
+          [[ ! -s "$consumer/unreadable-stdout" ]]
+          grep -Eq 'sealed.*unreadable' "$consumer/unreadable-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+
           if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
             "$installed/credentials-render-host" > "$consumer/stdout" 2> "$consumer/stderr"; then
             echo "Packaged renderer admitted missing credential source" >&2
