@@ -76,3 +76,54 @@ test('re-enrolling an existing host returns its original public recipient, not a
   assert.deepEqual(readFileSync(join(path, 'hosts', selectedHost + '.identity')), identityBefore);
   assert.deepEqual(readFileSync(join(path, 'recipients.json')), recipientsBefore);
 });
+
+
+test('host render refuses injected environment assignment bytes before changing existing managed outputs', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-env-injection-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
+  const store = openStore(storePath);
+  await store.initHost(host);
+  await store.put('fixture-env', 'INERT_BASE', {
+    holders: [host], consumers: [{ host, service: 'fixture-service', variable: 'FIXTURE' }],
+  });
+  const multilineFile = 'INERT_FILE_HEADER\nINERT_FILE_FOOTER\n';
+  await store.put('fixture-multiline-file', multilineFile, {
+    holders: [host], consumers: [{ host, service: 'fixture-service', file: '/unused-fixture-source' }],
+  });
+  const cli = () => spawnSync(process.execPath, [
+    new URL('../scripts/credentials.mjs', import.meta.url).pathname,
+    '--store', storePath, '--host', host, 'render-host', '--to', runtime,
+  ], { encoding: 'utf8' });
+  const initial = cli();
+  assert.equal(initial.status, 0, initial.stderr);
+  const envPath = join(runtime, 'fixture-service.env');
+  const filePath = join(runtime, 'files/fixture-multiline-file');
+  const manifestPath = join(runtime, '.credential-custody-render.json');
+  const baselineEnv = readFileSync(envPath);
+  const baselineFile = readFileSync(filePath);
+  const baselineManifest = readFileSync(manifestPath);
+  assert.equal(baselineFile.toString('utf8'), multilineFile,
+    'multiline secrets remain valid when delivered as files');
+  for (const injected of [
+    'INERT_VALUE\nINJECTED_ROLE=admin',
+    'INERT_VALUE\rINJECTED_ROLE=admin',
+    'INERT_VALUE\u0000INJECTED_ROLE=admin',
+  ]) {
+    await store.put('fixture-env', injected);
+    await assert.rejects(store.render(host, 'fixture-service'), /single-line|control character|environment/u,
+      'direct environment rendering must also refuse unsafe content');
+    const refused = cli();
+    assert.notEqual(refused.status, 0, 'unsafe value must never produce a successful generation');
+    assert.equal(refused.stdout, '', 'no partial/success output on refusal');
+    assert.match(refused.stderr, /single-line|control character|environment/u);
+    assert.equal(refused.stderr.includes('INJECTED_ROLE=admin'), false, 'never echo a secret');
+    assert.deepEqual(readFileSync(envPath), baselineEnv, 'prior environment must survive refusal');
+    assert.deepEqual(readFileSync(filePath), baselineFile, 'prior file credential must survive refusal');
+    assert.deepEqual(readFileSync(manifestPath), baselineManifest, 'ownership must survive refusal');
+  }
+  await store.put('fixture-env', 'INERT_ROTATED');
+  const final = cli();
+  assert.equal(final.status, 0, final.stderr);
+  assert.match(readFileSync(envPath, 'utf8'), /FIXTURE=INERT_ROTATED/u);
+});
