@@ -2,12 +2,21 @@ import { accessSync, constants, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { recipientOf } from './recipient-seal.mjs';
 
+/** Admit a host label before it can name any private identity file or runtime source. */
+export function assertCredentialHost(host) {
+  if (typeof host !== 'string'
+    || !/^[a-z0-9](?:[a-z0-9.-]{0,94}[a-z0-9])?$/u.test(host)
+    || host.includes('..')) {
+    throw new TypeError('invalid credential host name (expected lowercase DNS-style host label)');
+  }
+  return host;
+}
+
 /** Refuse incomplete or misselected source custody before any runtime output or reseal. */
 export async function assertRenderableStore(dir, host) {
   if (typeof dir !== 'string' || !dir) throw new TypeError('credential store directory is required for rendering');
-  if (typeof host !== 'string' || !host || host === '.' || host === '..' || /[/\\\u0000-\u001f\u007f]/u.test(host)) {
-    throw new TypeError(`invalid credential host for store ${JSON.stringify(dir)}`);
-  }
+  try { assertCredentialHost(host); }
+  catch { throw new TypeError(`invalid credential host for store ${JSON.stringify(dir)}`); }
   const context = `credential store ${JSON.stringify(dir)} for host ${JSON.stringify(host)}`;
   const requireKind = (path, kind) => {
     let info;
