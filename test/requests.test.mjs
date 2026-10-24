@@ -156,7 +156,7 @@ test('an unterminated but parseable request row is incomplete custody, not permi
   const { dir, store } = fixture(t), path = join(dir, 'requests.jsonl');
   store.request('first.need', { reason: 'original accepted Work', by: 'host-a' });
   const valid = readFileSync(path, 'utf8');
-  assert.equal(valid.endsWith('\\n'), true, 'the original producer terminates each JSONL row');
+  assert.equal(valid.endsWith('\n'), true, 'the original producer terminates each JSONL row');
   writeFileSync(path, valid.slice(0, -1));
   const interrupted = readFileSync(path);
   assert.throws(() => store.requests(), /credential requests.*(unterminated|newline|incomplete)/iu,
