@@ -597,6 +597,11 @@ export function openStore(dir, { create = true } = {}) {
         blockedBy = text;
       }
       const row = { at: new Date().toISOString(), id, reason, by, consumers, state: blockedBy === undefined ? 'requested' : 'deferred', ...(blockedBy === undefined ? {} : { blockedBy }) };
+      // A successful append receipt would be false if preceding request
+      // records could not be read. Reuse the original source reader before
+      // acknowledging new Work; the exclusive no-follow writer rechecks the
+      // path against substitution at open time.
+      readRequests();
       const fd = openRequests(constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND);
       try { appendFileSync(fd, `${JSON.stringify(row)}\n`); }
       finally { closeSync(fd); }
