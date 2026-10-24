@@ -18,6 +18,8 @@ const need = (name) => process.env[name] || (() => { throw new Error(`${name} is
 const store = need('CREDENTIALS_STORE'), host = need('CREDENTIALS_HOST'), to = need('CREDENTIALS_RENDER_TO');
 // The services wait on this render: an unreachable origin renders what the checkout already holds.
 if (process.env.CREDENTIALS_PULL === '1') {
+  // Never run Git against a misselected checkout, even before output pruning.
+  assertRenderableStore(store, host);
   try { execFileSync('git', ['-C', store, 'pull', '-q', '--ff-only'], { stdio: ['ignore', 'inherit', 'inherit'], timeout: 60_000 }); }
   catch (error) { process.stderr.write(`render-host: pull failed, rendering the checkout as it stands: ${error.message.split('\n')[0]}\n`); }
 }
