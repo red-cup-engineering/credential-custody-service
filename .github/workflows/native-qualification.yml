@@ -128,6 +128,22 @@ jobs:
           cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
           rm -- "$valid/registry/invalid.json"
 
+          # A well-formed JSON record at the wrong filename must not be taken
+          # as trustworthy custody evidence. Before this repair an extra record
+          # with no consumers was admitted without error (and a partial source
+          # could subsequently withdraw the previous live generation).
+          printf '%s\\n' '{"id":"foreign-record","holders":["fixture-host"],"consumers":[]}' > "$valid/registry/wrong-name.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \\
+            "$installed/credentials-render-host" > "$consumer/mismatch-stdout" 2> "$consumer/mismatch-stderr"; then
+            echo "Packaged renderer admitted mismatched registry record identity" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/mismatch-stdout" ]]
+          grep -Eq 'registry/wrong-name[.]json.*id mismatch' "$consumer/mismatch-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          rm -- "$valid/registry/wrong-name.json"
+
           if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
             "$installed/credentials-render-host" > "$consumer/stdout" 2> "$consumer/stderr"; then
             echo "Packaged renderer admitted missing credential source" >&2
