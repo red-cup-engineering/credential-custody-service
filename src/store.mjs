@@ -15,7 +15,7 @@
  * or authorize anything.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
 import { placedPath, serviceName, environmentAssignment, renderHost as renderHostCredentials } from './render-host.mjs';
@@ -116,8 +116,25 @@ export function openStore(dir, { create = true } = {}) {
     }
     return value;
   };
+  // Registry claims are custody records, not arbitrary filesystem pointers.
+  // Open the entry itself, refusing even a RESOLVED symlink; otherwise a
+  // borrowed but well-formed zero-consumer record can retire healthy outputs.
+  // Nonblocking open also prevents a forged FIFO from hanging the renderer.
+  const readRegistryJson = (path, { optional = false } = {}) => {
+    let fd;
+    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) {
+      if (optional && error.code === 'ENOENT') return undefined;
+      throw new Error(`credential registry source ${path} unavailable (${error.code ?? 'cannot open'})`, { cause: error });
+    }
+    try {
+      if (!fstatSync(fd).isFile()) throw new Error(`credential registry source ${path} unavailable (not a regular file)`);
+      try { return JSON.parse(readFileSync(fd, 'utf8')); }
+      catch (error) { throw new Error(`credential registry source ${path} contains invalid JSON`, { cause: error }); }
+    } finally { closeSync(fd); }
+  };
   const record = (id) => {
-    const path = recordPath(id), value = readJson(path, undefined);
+    const path = recordPath(id), value = readRegistryJson(path, { optional: true });
     return value === undefined ? null : requireRecord(path, id, value);
   };
   // Once a registry entry has been enumerated it must be read successfully:
@@ -138,7 +155,7 @@ export function openStore(dir, { create = true } = {}) {
     }
     return registryNames.map((f) => {
       const path = join(dir, 'registry', f), filenameId = f.slice(0, -'.json'.length);
-      const value = JSON.parse(readFileSync(path, 'utf8'));
+      const value = readRegistryJson(path);
       if (!ID.test(filenameId)) throw new TypeError(`credential registry entry ${path} has invalid filename id`);
       const admitted = requireRecord(path, filenameId, value);
       // A declared record without its sealed payload is incomplete custody,
