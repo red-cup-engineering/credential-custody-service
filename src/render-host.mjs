@@ -12,11 +12,30 @@ const PLACED_MANIFEST = '.credential-custody-render-placed.json';
 const everyVersion = (name) => name.startsWith('files/') || (name.endsWith('.env') && !name.includes('/'));
 const FILE_ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
 
-function serviceName(value) {
+export function serviceName(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > 240 || /[\u0000-\u001f\u007f/\\]/u.test(value) || value === '.' || value === '..') {
     throw new TypeError('a rendered service must be a single nonempty filename component');
   }
   return value;
+}
+
+
+/**
+ * Encode one systemd EnvironmentFile assignment without changing the value
+ * seen by its consumer. In unquoted values systemd strips outer whitespace
+ * and treats backslashes as escapes; in double-quoted values, JSON's escapes
+ * for quotes and backslashes are understood by the systemd parser.
+ * Credentials with line/control characters belong in file delivery instead.
+ */
+export function environmentAssignment(variable, value) {
+  if (typeof variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(variable)) {
+    throw new TypeError('invalid systemd environment variable name');
+  }
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f\uFEFF]/u.test(value)) {
+    throw new TypeError('systemd environment assignment requires a single-line value without control characters');
+  }
+  const serialized = /[\\'"\s]/u.test(value) ? JSON.stringify(value) : value;
+  return variable + '=' + serialized;
 }
 
 /**
@@ -103,7 +122,7 @@ function acquireLock(path) {
 export async function renderHost(store, host, dir) {
   if (!host || !dir) throw new TypeError('host and runtime directory are required');
   // A file credential renders where its consumer reads it (`path`), or else to files/<id>.
-  const services = new Map(), fileOutputs = new Map();
+  const services = new Map(), fileOutputs = new Map(), claimedEnvironmentVariables = new Map();
   for (const rec of store.records()) for (const consumer of rec.consumers ?? []) if (consumer.host === host) {
     const isFile = Boolean(consumer.file || consumer.path);
     let output;
@@ -115,8 +134,18 @@ export async function renderHost(store, host, dir) {
     }
     if (consumer.variable) {
       const service = serviceName(consumer.service);
+      // Every service variable has exactly one custody source. Otherwise
+      // systemd's last-assignment-wins behavior silently selects a different
+      // credential or file path, even though the registry is well formed.
+      // This must fail before creating a render directory or touching manifests.
+      const claimed = claimedEnvironmentVariables.get(service) ?? new Set();
+      if (claimed.has(consumer.variable)) {
+        throw new Error(`duplicate environment binding ${consumer.variable} for service ${service}`);
+      }
+      claimed.add(consumer.variable);
+      claimedEnvironmentVariables.set(service, claimed);
       const paths = services.get(service) ?? [];
-      if (isFile) paths.push(`${consumer.variable}=${join(dir, output)}`);
+      if (isFile) paths.push(environmentAssignment(consumer.variable, join(dir, output)));
       services.set(service, paths);
     }
   }

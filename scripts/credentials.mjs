@@ -38,7 +38,8 @@
  * An agent that needs a credential runs `get`; when the store does not hold it, `request`. It never asks a
  * person to sign in for it.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, chmodSync, renameSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { DESCRIPTIVE_FIELDS, fingerprint, isSecretName, openStore, parseEnv } from '../src/store.mjs';
@@ -54,7 +55,8 @@ const { values: o, positionals: [command, arg, arg2] } = parseArgs({ allowPositi
 const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? process.env.CREDENTIALS_HOST;
 const fail = (message) => { process.stderr.write(`${message}\n`); process.exit(2); };
 if (!storeDir) fail('--store <services section data/credentials dir> (or CREDENTIALS_STORE) is required');
-const store = openStore(storeDir);
+// Rendering must not synthesize a missing store before verifying the host source.
+const store = openStore(storeDir, { create: command !== 'render' && command !== 'render-host' });
 const needHost = () => host ?? fail('--host <this host> (or CREDENTIALS_HOST) is required');
 const list = (s) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 const readStdin = () => readFileSync(0, 'utf8').replace(/\r?\n$/u, '');
@@ -74,7 +76,22 @@ else if (command === 'put') {
 } else if (command === 'render') {
   const text = await store.render(needHost(), arg ?? fail('render <service>'));
   if (!o.out) process.stdout.write(text);
-  else { writeFileSync(`${o.out}.tmp`, text, { mode: 0o600 }); chmodSync(`${o.out}.tmp`, 0o600); renameSync(`${o.out}.tmp`, o.out); out({ wrote: o.out, variables: text.split('\n').filter(Boolean).length }); }
+  else {
+    // A predictable <out>.tmp path may be a leftover symlink into an
+    // unrelated file. Never open it, even briefly, with plaintext secrets.
+    // Match the original custody writer: unpredictable exclusive staging,
+    // private mode, atomic publication and cleanup on every failure path.
+    const temporary = `${o.out}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, text, { mode: 0o600, flag: 'wx' });
+      chmodSync(temporary, 0o600);
+      renameSync(temporary, o.out);
+    } finally {
+      try { unlinkSync(temporary); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    out({ wrote: o.out, variables: text.split('\n').filter(Boolean).length });
+  }
 } else if (command === 'import') {
   const file = arg ?? fail('import <env-file> --service <name>'), service = o.service ?? fail('--service <name> names who uses this env file'), me = needHost();
   const holders = o.holders ? list(o.holders) : [me];

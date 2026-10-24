@@ -1,0 +1,519 @@
+name: Credential custody native qualification
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  native-node-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact proposed source without persisted credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, pinned
+        with:
+          persist-credentials: false
+      - name: Select supported Node runtime
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+      - name: Install exact pinned dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Exercise original native functional, failure and security regressions
+        run: npm test
+      - name: Qualify deterministic packaged release candidate and installed refusal
+        shell: bash
+        run: |
+          set -euo pipefail
+          first="$(mktemp -d)"
+          second="$(mktemp -d)"
+          consumer="$(mktemp -d)"
+          npm pack --offline --ignore-scripts --pack-destination "$first" --silent
+          npm pack --offline --ignore-scripts --pack-destination "$second" --silent
+          shopt -s nullglob
+          a=("$first"/*.tgz)
+          b=("$second"/*.tgz)
+          [[ ${#a[@]} -eq 1 && ${#b[@]} -eq 1 ]]
+          cmp -- "${a[0]}" "${b[0]}"
+          tar -tzf "${a[0]}" > "$consumer/packed-files"
+          for path in package.json scripts/render-host.mjs scripts/credentials.mjs src/store.mjs src/render-source-admission.mjs; do
+            grep -Fqx -- "package/$path" "$consumer/packed-files"
+          done
+          if grep -Eq '^package/(data/|hosts/|node_modules/|\.env)' "$consumer/packed-files"; then
+            echo "Unexpected private or runtime material in distributable" >&2
+            exit 1
+          fi
+          # Pack fabrication is offline; the fresh consumer legitimately resolves dependencies from the house registry.
+          npm install --ignore-scripts --no-audit --no-fund --registry=https://registry.561.group/ --prefix "$consumer" "${a[0]}"
+          cd "$consumer"
+          node --input-type=module -e "const { openStore } = await import('@red-cup-engineering/credential-custody-service/store'); if (typeof openStore !== 'function') process.exit(1)"
+          # Prove the installed package can produce a real prior generation, not
+          # merely refuse against a hand-written approximation of a manifest.
+          # All values are inert fixtures: no live credential or host identity.
+          installed="$consumer/node_modules/.bin"
+          valid="$consumer/valid-original"
+          live="$consumer/live"
+          "$installed/credentials" --store "$valid" --host fixture-host init-host > "$consumer/host-enrollment"
+          "$installed/credentials" --store "$valid" --host fixture-host init-host > "$consumer/host-enrollment-repeat"
+          node --input-type=module - "$consumer/host-enrollment" "$consumer/host-enrollment-repeat" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const [first, again] = process.argv.slice(2).map(path => JSON.parse(readFileSync(path, 'utf8')));
+          assert.equal(first.created, true);
+          assert.equal(again.created, false);
+          assert.match(first.recipient, /^age1[0-9a-z]+$/u);
+          assert.equal(again.recipient, first.recipient, 'repeat enrollment must return public recipient, never an unresolved Promise');
+          NODE
+          # The genuinely installed producer must not follow predictable
+          # .tmp staging symlinks into an unrelated file, for either public
+          # recipient registration or sealed credential publication.
+          staging="$consumer/staging-symlink"
+          mkdir -p "$staging"
+          printf 'INERT_STAGING_GUARD' > "$consumer/staging-guard"
+          ln -s "$consumer/staging-guard" "$staging/recipients.json.tmp"
+          "$installed/credentials" --store "$staging" --host staging-host init-host > "$consumer/staging-init"
+          [[ "$(cat "$consumer/staging-guard")" == INERT_STAGING_GUARD ]]
+          [[ -s "$staging/recipients.json" ]]
+          ln -s "$consumer/staging-guard" "$staging/sealed/fixture.token.age.tmp"
+          printf 'INERT_STAGING_VALUE' | "$installed/credentials" --store "$staging" --host staging-host \
+            --holders staging-host --kind token put fixture.token > "$consumer/staging-put"
+          [[ "$(cat "$consumer/staging-guard")" == INERT_STAGING_GUARD ]]
+          [[ -s "$staging/sealed/fixture.token.age" ]]
+          [[ -s "$staging/registry/fixture.token.json" ]]
+
+          # The installed rename producer must not replace an orphaned
+          # ciphertext file simply because no destination registry record
+          # exists. Its original source bytes must remain recoverable.
+          printf 'INERT_ORPHANED_SEALED_BYTES' > "$staging/sealed/retained.age"
+          cp "$staging/registry/fixture.token.json" "$consumer/rename-before-registry"
+          cp "$staging/sealed/fixture.token.age" "$consumer/rename-before-seal"
+          if "$installed/credentials" --store "$staging" --host staging-host \
+            rename fixture.token retained > "$consumer/rename-refused-stdout" 2> "$consumer/rename-refused-stderr"; then
+            echo "Installed rename destroyed already-present orphaned custody" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/rename-refused-stdout" ]]
+          grep -Fq 'sealed credential destination' "$consumer/rename-refused-stderr"
+          cmp -- "$staging/registry/fixture.token.json" "$consumer/rename-before-registry"
+          cmp -- "$staging/sealed/fixture.token.age" "$consumer/rename-before-seal"
+          [[ "$(cat "$staging/sealed/retained.age")" == INERT_ORPHANED_SEALED_BYTES ]]
+          [[ ! -e "$staging/registry/retained.json" ]]
+          # An actual unoccupied destination still supports a normal move.
+          "$installed/credentials" --store "$staging" --host staging-host \
+            rename fixture.token renamed-token > "$consumer/rename-accepted"
+          [[ ! -e "$staging/registry/fixture.token.json" ]]
+          [[ ! -e "$staging/sealed/fixture.token.age" ]]
+          [[ -s "$staging/registry/renamed-token.json" ]]
+          [[ -s "$staging/sealed/renamed-token.age" ]]
+          "$installed/credentials" --store "$staging" --host staging-host \
+            get renamed-token > "$consumer/rename-value"
+          [[ "$(cat "$consumer/rename-value")" == INERT_STAGING_VALUE ]]
+
+          # This installed binary must reject path-shaped and malformed host
+          # labels before touching recipients or escaping the private host dir.
+          printf '%s' 'INERT_KEEP' > "$consumer/escaped.identity"
+          cp "$valid/recipients.json" "$consumer/enrollment-recipients"
+          for bad_host in '../../escaped' '../escaped' 'bad/host' 'bad host'; do
+            if "$installed/credentials" --store "$valid" --host "$bad_host" init-host > "$consumer/bad-host-stdout" 2> "$consumer/bad-host-stderr"; then
+              echo "Installed enrollment accepted invalid host label" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/bad-host-stdout" ]]
+            grep -Fq 'invalid credential host' "$consumer/bad-host-stderr"
+            [[ "$(cat "$consumer/escaped.identity")" == INERT_KEEP ]]
+            cmp -- "$valid/recipients.json" "$consumer/enrollment-recipients"
+          done
+
+          # An interrupted or contradictory enrollment is a refusal, never
+          # another freshly minted identity or a false successful repeat.
+          interrupted="$consumer/interrupted-enrollment"
+          mkdir -p "$interrupted/hosts"
+          cp "$valid/hosts/fixture-host.identity" "$interrupted/hosts/fixture-host.identity"
+          if "$installed/credentials" --store "$interrupted" --host fixture-host init-host > "$consumer/interrupted-stdout" 2> "$consumer/interrupted-stderr"; then
+            echo "Installed enrollment accepted unregistered private identity" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/interrupted-stdout" ]]
+          grep -Fq 'custody mismatch' "$consumer/interrupted-stderr"
+          [[ ! -e "$interrupted/recipients.json" ]]
+          cmp -- "$interrupted/hosts/fixture-host.identity" "$valid/hosts/fixture-host.identity"
+
+          orphaned="$consumer/orphaned-enrollment"
+          mkdir -p "$orphaned"
+          cp "$valid/recipients.json" "$orphaned/recipients.json"
+          if "$installed/credentials" --store "$orphaned" --host fixture-host init-host > "$consumer/orphaned-stdout" 2> "$consumer/orphaned-stderr"; then
+            echo "Installed enrollment rotated a missing private identity" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/orphaned-stdout" ]]
+          grep -Fq 'no local identity' "$consumer/orphaned-stderr"
+          [[ ! -e "$orphaned/hosts/fixture-host.identity" ]]
+          cmp -- "$orphaned/recipients.json" "$valid/recipients.json"
+
+          printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/put-result"
+          "$installed/credentials" --store "$valid" --host fixture-host \
+            --service fixture-service --variable FIXTURE_TOKEN bind fixture.token > "$consumer/bind-result"
+          CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/healthy-stdout"
+          node --input-type=module - "$consumer/healthy-stdout" "$live" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, statSync } from 'node:fs';
+          import { join } from 'node:path';
+          const [statusPath, live] = process.argv.slice(2);
+          const status = JSON.parse(readFileSync(statusPath, 'utf8'));
+          assert.equal(status.host, 'fixture-host');
+          assert.equal(status.to, live);
+          assert.deepEqual(status.services, ['fixture-service']);
+          assert.deepEqual(status.files, []);
+          const output = join(live, 'fixture-service.env');
+          assert.equal(readFileSync(output, 'utf8'), 'FIXTURE_TOKEN=INERT_FIXTURE_VALUE\n');
+          assert.equal(statSync(output).mode & 0o077, 0, 'rendered env must be private');
+          const manifest = JSON.parse(readFileSync(join(live, '.credential-custody-render.json'), 'utf8'));
+          assert.equal(manifest.host, 'fixture-host');
+          assert.equal(manifest.state, 'complete');
+          assert.deepEqual(manifest.outputs, ['fixture-service.env']);
+          NODE
+
+          # Exercise the *freshly installed* single-service CLI publication
+          # path separately from render-host. The old deterministic .tmp name
+          # could follow a stale symlink and leak a plaintext secret into an
+          # unrelated file before reporting a successful render.
+          printf 'INERT_CLI_RENDER_SENTINEL' > "$consumer/cli-render-sentinel"
+          ln -s "$consumer/cli-render-sentinel" "$consumer/fixture-render.env.tmp"
+          "$installed/credentials" --store "$valid" --host fixture-host render fixture-service \
+            --out "$consumer/fixture-render.env" > "$consumer/cli-render-receipt"
+          [[ "$(cat "$consumer/cli-render-sentinel")" == INERT_CLI_RENDER_SENTINEL ]]
+          [[ "$(cat "$consumer/fixture-render.env")" == FIXTURE_TOKEN=INERT_FIXTURE_VALUE ]]
+          [[ -L "$consumer/fixture-render.env.tmp" ]]
+          [[ -s "$consumer/cli-render-receipt" ]]
+          ! grep -Fq 'INERT_FIXTURE_VALUE' "$consumer/cli-render-receipt"
+
+          # The exact same genuinely installed executable must now refuse a
+          # missing selected source without withdrawing that healthy generation.
+          cp "$live/fixture-service.env" "$consumer/expected-kept"
+          cp "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+
+          # Installed producer must refuse conflicting assignments without
+          # changing either the existing sealed value or its registry record.
+          # Separately, an externally corrupted registry must still fail closed
+          # through the installed renderer without withdrawing a prior output.
+          printf 'INERT_COLLISION' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.other > "$consumer/other-put"
+          cp "$valid/registry/fixture.other.json" "$consumer/expected-other-registry"
+          cp "$valid/sealed/fixture.other.age" "$consumer/expected-other-seal"
+          for binding_kind in value file; do
+            bind_args=(--service fixture-service --variable FIXTURE_TOKEN)
+            if [[ "$binding_kind" == file ]]; then
+              bind_args+=(--path keys/other.pem)
+            fi
+            if "$installed/credentials" --store "$valid" --host fixture-host \
+              "${bind_args[@]}" bind fixture.other > "$consumer/other-bind-stdout" 2> "$consumer/other-bind-stderr"; then
+              echo "Installed producer accepted duplicate environment binding ($binding_kind)" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/other-bind-stdout" ]]
+            grep -Fq -- 'duplicate environment binding FIXTURE_TOKEN' "$consumer/other-bind-stderr"
+            cmp -- "$valid/registry/fixture.other.json" "$consumer/expected-other-registry"
+            cmp -- "$valid/sealed/fixture.other.age" "$consumer/expected-other-seal"
+            node --input-type=module - "$valid/registry/fixture.other.json" "$binding_kind" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const [path, kind] = process.argv.slice(2);
+          const record = JSON.parse(readFileSync(path, 'utf8'));
+          record.consumers = [{
+            host: 'fixture-host', service: 'fixture-service', variable: 'FIXTURE_TOKEN',
+            ...(kind === 'file' ? { path: 'keys/other.pem' } : {})
+          }];
+          writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+          NODE
+            if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+              "$installed/credentials-render-host" > "$consumer/collision-stdout" 2> "$consumer/collision-stderr"; then
+              echo "Installed renderer admitted corrupted duplicate service binding ($binding_kind)" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/collision-stdout" ]]
+            grep -Fq -- 'duplicate environment binding FIXTURE_TOKEN' "$consumer/collision-stderr"
+            if grep -Fq -- 'INERT_COLLISION' "$consumer/collision-stderr"; then
+              echo "Installed renderer disclosed a credential while refusing a duplicate binding" >&2
+              exit 1
+            fi
+            cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+            cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+            cp "$consumer/expected-other-registry" "$valid/registry/fixture.other.json"
+          done
+          rm -- "$valid/registry/fixture.other.json" "$valid/sealed/fixture.other.age"
+
+          # Installed-consumer regression: a file delivery cannot launder a
+          # forged environment variable into a previously healthy generation.
+          # The record and sealed value are real; only the consumer metadata
+          # is adversarial. Verify refusal, private output preservation and
+          # no secret content in diagnostics, then restore original custody.
+          cp "$valid/registry/fixture.token.json" "$consumer/expected-registry"
+          node --input-type=module - "$valid/registry/fixture.token.json" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const path = process.argv[2];
+          const record = JSON.parse(readFileSync(path, 'utf8'));
+          record.consumers = [{ host: 'fixture-host', file: '/example/key.pem', service: 'fixture-service', variable: 'SAFE\nINJECTED_ROLE' }];
+          writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+          NODE
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/file-poison-stdout" 2> "$consumer/file-poison-stderr"; then
+            echo "Installed renderer admitted forged file-bound environment assignment" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/file-poison-stdout" ]]
+          grep -Eq 'registry/fixture[.]token[.]json.*consumers' "$consumer/file-poison-stderr"
+          if grep -Fq -- 'INJECTED_ROLE' "$consumer/file-poison-stderr"; then
+            echo "Installed renderer leaked adversarial credential metadata" >&2
+            exit 1
+          fi
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          cp "$consumer/expected-registry" "$valid/registry/fixture.token.json"
+
+
+          # Installed-consumer security: a sealed multiline env value may
+          # contain another EnvironmentFile assignment. It must fail before
+          # replacing any prior managed output; file-bound multiline secrets
+          # are covered separately by the native suite.
+          printf 'INERT_NEW_VALUE\nINJECTED_ROLE=admin' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/unsafe-put"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/injected-stdout" 2> "$consumer/injected-stderr"; then
+            echo "Installed renderer admitted injected environment assignment from a sealed value" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/injected-stdout" ]]
+          grep -Eq 'environment credential.*single-line' "$consumer/injected-stderr"
+          if grep -Fq -- 'INJECTED_ROLE=admin' "$consumer/injected-stderr"; then
+            echo "Installed renderer leaked credential content in diagnostics" >&2
+            exit 1
+          fi
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/restore-put"
+
+          # Installed-consumer positive and negative EnvironmentFile receiving:
+          # preserve spaces, quotes and backslashes from sealed values, then
+          # refuse a tab/control value without overwriting that valid generation.
+          # The destination deliberately contains a literal backslash too.
+          escaped="$consumer/escaped-runtime\\with spaces"
+          printf '%s' '  INERT\route "quoted" $marker  ' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/escaped-put"
+          CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$escaped" \
+            "$installed/credentials-render-host" > "$consumer/escaped-stdout"
+          node --input-type=module - "$escaped" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const original = '  INERT\\route "quoted" $marker  ';
+          assert.equal(readFileSync(join(process.argv[2], 'fixture-service.env'), 'utf8'),
+            'FIXTURE_TOKEN=' + JSON.stringify(original) + '\n');
+          NODE
+          cp "$escaped/fixture-service.env" "$consumer/escaped-expected-env"
+          cp "$escaped/.credential-custody-render.json" "$consumer/escaped-expected-manifest"
+          printf 'INERT_CONTROL\tVALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/control-put"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$escaped" \
+            "$installed/credentials-render-host" > "$consumer/control-stdout" 2> "$consumer/control-stderr"; then
+            echo "Installed renderer admitted unsupported environment control character" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/control-stdout" ]]
+          grep -Eq 'environment credential.*control characters' "$consumer/control-stderr"
+          cmp -- "$escaped/fixture-service.env" "$consumer/escaped-expected-env"
+          cmp -- "$escaped/.credential-custody-render.json" "$consumer/escaped-expected-manifest"
+          printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/restore-post-escape"
+
+          # A complete-looking, identity-valid source with unreadable sealed/
+          # must not be treated as an intentionally empty authorized source.
+          # This uses the genuinely packed-and-installed executable.
+          chmod 000 "$valid/sealed"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/unreadable-stdout" 2> "$consumer/unreadable-stderr"; then
+            echo "Packaged renderer admitted unreadable sealed credential source" >&2
+            exit 1
+          fi
+          chmod 700 "$valid/sealed"
+          [[ ! -s "$consumer/unreadable-stdout" ]]
+          grep -Eq 'sealed.*unreadable' "$consumer/unreadable-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+
+          # A present registry directory is not enough: an entry which disappears
+          # after enumeration must fail closed, not turn this valid source into
+          # an empty generation and remove the previously rendered service.
+          ln -s "$consumer/absent-credential-record" "$valid/registry/vanished.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/vanished-stdout" 2> "$consumer/vanished-stderr"; then
+            echo "Packaged renderer silently skipped a vanished registry entry" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/vanished-stdout" ]]
+          grep -Fq -- 'registry/vanished.json' "$consumer/vanished-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          rm -- "$valid/registry/vanished.json"
+
+          # An enumerated JSON null cannot be interpreted as an absent record.
+          printf 'null\n' > "$valid/registry/invalid.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/invalid-stdout" 2> "$consumer/invalid-stderr"; then
+            echo "Packaged renderer silently skipped an invalid registry record" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/invalid-stdout" ]]
+          grep -Fq -- 'registry/invalid.json' "$consumer/invalid-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          rm -- "$valid/registry/invalid.json"
+
+          # A well-formed JSON record at the wrong filename must not be taken
+          # as trustworthy custody evidence. Before this repair an extra record
+          # with no consumers was admitted without error (and a partial source
+          # could subsequently withdraw the previous live generation).
+          printf '%s\n' '{"id":"foreign-record","holders":["fixture-host"],"consumers":[]}' > "$valid/registry/wrong-name.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/mismatch-stdout" 2> "$consumer/mismatch-stderr"; then
+            echo "Packaged renderer admitted mismatched registry record identity" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/mismatch-stdout" ]]
+          grep -Eq 'registry/wrong-name[.]json.*id mismatch' "$consumer/mismatch-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          rm -- "$valid/registry/wrong-name.json"
+
+          # A registry record with no holders is not producible by the original
+          # credential put contract. Refuse rather than interpreting it as
+          # permission to retire previously healthy managed outputs.
+          printf '%s\n' '{"id":"zero-holders","holders":[],"consumers":[]}' > "$valid/registry/zero-holders.json"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/zero-holders-stdout" 2> "$consumer/zero-holders-stderr"; then
+            echo "Packaged renderer admitted a zero-holder registry record" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/zero-holders-stdout" ]]
+          grep -Eq 'registry/zero-holders[.]json.*holders' "$consumer/zero-holders-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          rm -- "$valid/registry/zero-holders.json"
+
+          # Missing bytes for a complete, explicitly zero-consumer registry
+          # entry are corrupted custody, not authorization to retire a prior
+          # healthy generation. The packed binary, not local source, must
+          # refuse even though that record needs no value for current output.
+          cp "$valid/registry/fixture.token.json" "$consumer/pre-missing-seal-record"
+          node --input-type=module - "$valid/registry/fixture.token.json" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const path = process.argv[2];
+          const record = JSON.parse(readFileSync(path, 'utf8'));
+          record.consumers = [];
+          writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+          NODE
+          mv "$valid/sealed/fixture.token.age" "$consumer/held-payload-for-refusal"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/missing-payload-stdout" 2> "$consumer/missing-payload-stderr"; then
+            echo "Packaged renderer retired healthy output despite absent sealed payload" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/missing-payload-stdout" ]]
+          grep -Fq -- 'sealed/fixture.token.age' "$consumer/missing-payload-stderr"
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          mv "$consumer/held-payload-for-refusal" "$valid/sealed/fixture.token.age"
+          cp "$consumer/pre-missing-seal-record" "$valid/registry/fixture.token.json"
+
+          if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+            "$installed/credentials-render-host" > "$consumer/stdout" 2> "$consumer/stderr"; then
+            echo "Packaged renderer admitted missing credential source" >&2
+            exit 1
+          fi
+          [[ ! -e "$consumer/missing-original" && ! -s "$consumer/stdout" ]]
+          cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+          cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          grep -Fq -- "$consumer/missing-original" "$consumer/stderr"
+
+          # The installed-consumer check above qualified THIS pack. Preserve
+          # those exact bytes for independent release receiving, not a rebuild.
+          qualified="$RUNNER_TEMP/credential-custody-qualified"
+          mkdir -p "$qualified"
+          cp -- "${a[0]}" "$qualified/credential-custody.tgz"
+          (cd "$qualified" && sha256sum credential-custody.tgz > SHA256SUMS)
+          node --input-type=module - "$qualified" <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const qualified = process.argv[2];
+          const source = process.env.GITHUB_WORKSPACE;
+          const git = (...args) => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' }).trim();
+          const checksumLine = readFileSync(join(qualified, 'SHA256SUMS'), 'utf8').trim();
+          if (!/^[a-f0-9]{64}  credential-custody[.]tgz$/u.test(checksumLine)) {
+            throw new Error('unexpected SHA256SUMS format for tested tarball');
+          }
+          const sha256 = checksumLine.slice(0, 64);
+          const metadata = {
+            kind: 'credential-custody-tested-release-candidate',
+            version: 1,
+            sourceRepository: process.env.GITHUB_REPOSITORY,
+            testedCommit: git('rev-parse', 'HEAD'),
+            testedTree: git('rev-parse', 'HEAD^{tree}'),
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            package: '@red-cup-engineering/credential-custody-service',
+            packageVersion: JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).version,
+            artifact: 'credential-custody.tgz',
+            artifactSha256: sha256,
+            qualification: 'native Node tests, deterministic twin pack, private-path guard, installed healthy, single-service exclusive staging, orphan-safe rename, quoted env render, duplicate-binding and control refusal, fail-closed preservation'
+          };
+          writeFileSync(join(qualified, 'qualification.json'), JSON.stringify(metadata, null, 2) + String.fromCharCode(10));
+          NODE
+      - name: Retain exact consumer-tested archive for source-owned independent release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, pinned Node24
+        with:
+          name: credential-custody-qualified-${{ github.sha }}
+          path: ${{ runner.temp }}/credential-custody-qualified/
+          if-no-files-found: error
+          retention-days: 7
+
+  receive-qualified-package:
+    needs: native-node-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read back the same exact source selection, not a new main branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, pinned
+        with:
+          persist-credentials: false
+      - name: Fetch immutable package from the original qualifier job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2, pinned Node24
+        with:
+          name: credential-custody-qualified-${{ github.sha }}
+          path: ${{ runner.temp }}/received-credential-custody
+          digest-mismatch: error
+      - name: Independently receive exact tarball, checksum and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/received-credential-custody"
+          sha256sum -c SHA256SUMS
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          const git = (...args) => execFileSync('git', ['-C', process.env.GITHUB_WORKSPACE, ...args], { encoding: 'utf8' }).trim();
+          const receipt = JSON.parse(readFileSync('qualification.json', 'utf8'));
+          const checksumLine = readFileSync('SHA256SUMS', 'utf8').trim();
+          assert.equal(receipt.kind, 'credential-custody-tested-release-candidate');
+          assert.equal(receipt.version, 1);
+          assert.equal(receipt.sourceRepository, process.env.GITHUB_REPOSITORY);
+          assert.equal(receipt.testedCommit, git('rev-parse', 'HEAD'));
+          assert.equal(receipt.testedTree, git('rev-parse', 'HEAD^{tree}'));
+          assert.equal(receipt.workflowRunId, process.env.GITHUB_RUN_ID);
+          assert.equal(receipt.artifact, 'credential-custody.tgz');
+          assert.equal(receipt.artifactSha256, checksumLine.slice(0, 64));
+          assert.match(receipt.artifactSha256, /^[a-f0-9]{64}$/u);
+          assert.equal(receipt.packageVersion, JSON.parse(readFileSync(process.env.GITHUB_WORKSPACE + '/package.json', 'utf8')).version);
+          NODE
