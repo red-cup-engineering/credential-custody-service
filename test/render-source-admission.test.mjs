@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore } from '../src/store.mjs';
@@ -109,6 +109,23 @@ test('missing sealed, registry, host identity and recipients never withdraw a pr
   const healthy = runUnit(f.store, join(f.root, 'empty-valid-runtime'));
   assert.equal(healthy.status, 0, healthy.stderr);
   assert.deepEqual(JSON.parse(healthy.stdout).services, [], 'an authenticated empty store is legitimately empty');
+});
+
+test('an enumerated registry entry that vanished is a source refusal, never permission to withdraw output', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  // A dangling link has a directory entry but its target vanished between
+  // enumeration and read. The old records() silently filtered ENOENT to null,
+  // mistakenly authorizing an empty render and deleting managed outputs.
+  const missingRecord = join(f.store, 'registry', 'vanished.json');
+  symlinkSync(join(f.root, 'not-there.json'), missingRecord);
+  for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+    refuseWithoutPruning(result, f.store, f.runtime, manifest, /vanished\\.json.*ENOENT/u);
+  }
+  await assert.rejects(opened.renderHost(host, f.runtime), /vanished\\.json|ENOENT/u);
+  assert.equal(readFileSync(join(f.runtime, 'kept.env'), 'utf8'), 'PREVIOUSLY_RENDERED_INERT_VALUE\\n');
+  assert.equal(readFileSync(join(f.runtime, '.credential-custody-render.json'), 'utf8'), manifest);
 });
 
 test('unreadable sealed source is not a valid empty store and must preserve earlier output', async t => {
