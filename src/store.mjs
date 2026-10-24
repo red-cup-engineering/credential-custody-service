@@ -52,7 +52,13 @@ export function openStore(dir, { create = true } = {}) {
     if ((statSync(path).mode & 0o077) !== 0) throw new Error(`${path} is readable by others; chmod 600 it`);
     return readFileSync(path, 'utf8').trim();
   }
-  const record = (id) => readJson(recordPath(id), null);
+  const record = (id) => {
+    const path = recordPath(id), value = readJson(path, null);
+    if (value !== null && (!value || typeof value !== 'object' || Array.isArray(value) || value.id !== id)) {
+      throw new TypeError(`credential registry entry ${path} id mismatch or invalid record`);
+    }
+    return value;
+  };
   // Once a registry entry has been enumerated it must be read successfully:
   // treating ENOENT as a missing optional record silently erases a credential
   // from the render plan, allowing a later manifest reconciliation to withdraw
@@ -62,6 +68,13 @@ export function openStore(dir, { create = true } = {}) {
     const value = JSON.parse(readFileSync(path, 'utf8'));
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new TypeError(`credential registry entry ${path} must be a record object`);
+    }
+    // The directory entry itself is source evidence: an interrupted rename or
+    // a mismatched imported record must not become an authorized empty render.
+    // Refuse BEFORE touching the runtime manifest or withdrawing outputs.
+    const filenameId = f.slice(0, -'.json'.length);
+    if (!ID.test(filenameId) || value.id !== filenameId) {
+      throw new TypeError(`credential registry entry ${path} id mismatch: file ${JSON.stringify(filenameId)}, record ${JSON.stringify(value.id)}`);
     }
     return value;
   });
