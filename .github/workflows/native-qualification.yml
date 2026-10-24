@@ -82,6 +82,34 @@ jobs:
           [[ -s "$staging/sealed/fixture.token.age" ]]
           [[ -s "$staging/registry/fixture.token.json" ]]
 
+          # The installed rename producer must not replace an orphaned
+          # ciphertext file simply because no destination registry record
+          # exists. Its original source bytes must remain recoverable.
+          printf 'INERT_ORPHANED_SEALED_BYTES' > "$staging/sealed/retained.age"
+          cp "$staging/registry/fixture.token.json" "$consumer/rename-before-registry"
+          cp "$staging/sealed/fixture.token.age" "$consumer/rename-before-seal"
+          if "$installed/credentials" --store "$staging" --host staging-host \
+            rename fixture.token retained > "$consumer/rename-refused-stdout" 2> "$consumer/rename-refused-stderr"; then
+            echo "Installed rename destroyed already-present orphaned custody" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/rename-refused-stdout" ]]
+          grep -Fq 'sealed credential destination' "$consumer/rename-refused-stderr"
+          cmp -- "$staging/registry/fixture.token.json" "$consumer/rename-before-registry"
+          cmp -- "$staging/sealed/fixture.token.age" "$consumer/rename-before-seal"
+          [[ "$(cat "$staging/sealed/retained.age")" == INERT_ORPHANED_SEALED_BYTES ]]
+          [[ ! -e "$staging/registry/retained.json" ]]
+          # An actual unoccupied destination still supports a normal move.
+          "$installed/credentials" --store "$staging" --host staging-host \
+            rename fixture.token renamed-token > "$consumer/rename-accepted"
+          [[ ! -e "$staging/registry/fixture.token.json" ]]
+          [[ ! -e "$staging/sealed/fixture.token.age" ]]
+          [[ -s "$staging/registry/renamed-token.json" ]]
+          [[ -s "$staging/sealed/renamed-token.age" ]]
+          "$installed/credentials" --store "$staging" --host staging-host \
+            get renamed-token > "$consumer/rename-value"
+          [[ "$(cat "$consumer/rename-value")" == INERT_STAGING_VALUE ]]
+
           # This installed binary must reject path-shaped and malformed host
           # labels before touching recipients or escaping the private host dir.
           printf '%s' 'INERT_KEEP' > "$consumer/escaped.identity"
@@ -438,7 +466,7 @@ jobs:
             packageVersion: JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).version,
             artifact: 'credential-custody.tgz',
             artifactSha256: sha256,
-            qualification: 'native Node tests, deterministic twin pack, private-path guard, installed healthy, single-service exclusive staging, quoted env render, duplicate-binding and control refusal, fail-closed preservation'
+            qualification: 'native Node tests, deterministic twin pack, private-path guard, installed healthy, single-service exclusive staging, orphan-safe rename, quoted env render, duplicate-binding and control refusal, fail-closed preservation'
           };
           writeFileSync(join(qualified, 'qualification.json'), JSON.stringify(metadata, null, 2) + String.fromCharCode(10));
           NODE
