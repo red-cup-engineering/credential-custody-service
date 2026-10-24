@@ -475,6 +475,24 @@ jobs:
           assert.deepEqual(readFileSync(ledger), corrupted, 'invalid log is not overwritten or extended');
           writeFileSync(ledger, healthy);
           assert.deepEqual(store.requests().map(r => r.id), ['prior.need']);
+          // Held-out installed-package case: a syntactically valid final row
+          // without the original append terminator is still interrupted Work.
+          // Do not concatenate the next demand or claim a successful receipt.
+          writeFileSync(ledger, healthy.subarray(0, -1));
+          const unterminated = readFileSync(ledger);
+          assert.throws(() => store.requests(), /credential requests.*unterminated final line/u);
+          assert.throws(() => store.request('later.need', { reason: 'INERT_UNRECEIVED', by: 'fixture-host' }),
+            /credential requests.*unterminated final line/u);
+          for (const args of [['requests', '--all'], ['audit'],
+            ['request', 'later.need', '--reason', 'INERT_UNRECEIVED', '--by', 'fixture-host']]) {
+            const result = invoke(...args);
+            assert.notEqual(result.status, 0);
+            assert.equal(result.stdout, '', 'incomplete source cannot claim a new accepted customer need');
+            assert.equal(result.stderr.includes('INERT_UNRECEIVED'), false);
+          }
+          assert.deepEqual(readFileSync(ledger), unterminated, 'all unresolved customer demand remains unchanged');
+          writeFileSync(ledger, healthy);
+          assert.deepEqual(store.requests().map(r => r.id), ['prior.need']);
           const external = join(root, 'unrelated');
           writeFileSync(external, 'INERT_EXTERNAL_SENTINEL\n');
           rmSync(ledger);
