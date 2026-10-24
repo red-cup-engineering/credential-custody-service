@@ -245,6 +245,33 @@ jobs:
           [[ ! -e "$orphaned/hosts/fixture-host.identity" ]]
           cmp -- "$orphaned/recipients.json" "$valid/recipients.json"
 
+          # Source-owned installed enrollment must reject a malformed public
+          # recipient registry BEFORE creating any private identity. A
+          # half-registered private key can strand the host on the next run.
+          malformed="$consumer/malformed-recipients"
+          mkdir -p "$malformed"
+          for bad_shape in null-hosts array-hosts string-recovery; do
+            recovery_option=()
+            if [[ "$bad_shape" == null-hosts ]]; then
+              printf '%s\n' '{"hosts":null,"recovery":[]}' > "$malformed/recipients.json"
+            elif [[ "$bad_shape" == array-hosts ]]; then
+              printf '%s\n' '{"hosts":[],"recovery":[]}' > "$malformed/recipients.json"
+            else
+              printf '%s\n' '{"hosts":{},"recovery":"not-a-list"}' > "$malformed/recipients.json"
+              recovery_option=(--recovery)
+            fi
+            cp -- "$malformed/recipients.json" "$consumer/invalid-recipients-original"
+            if "$installed/credentials" --store "$malformed" --host malformed-host \
+              "${recovery_option[@]}" init-host > "$consumer/malformed-stdout" 2> "$consumer/malformed-stderr"; then
+              echo "Installed enrollment accepted malformed recipients ($bad_shape)" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/malformed-stdout" ]]
+            grep -Fq 'recipients custody registry' "$consumer/malformed-stderr"
+            [[ ! -e "$malformed/hosts/malformed-host.identity" ]]
+            cmp -- "$malformed/recipients.json" "$consumer/invalid-recipients-original"
+          done
+
           printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
             --holders fixture-host --kind token put fixture.token > "$consumer/put-result"
           "$installed/credentials" --store "$valid" --host fixture-host \
