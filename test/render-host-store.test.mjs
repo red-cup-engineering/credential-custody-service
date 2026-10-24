@@ -109,6 +109,33 @@ test('sealed credential update never overwrites a preexisting temporary symlink 
   assert.equal(await store.get('fixture.id', 'fixture-host'), 'INERT_SEALED_VALUE');
 });
 
+test('single-service CLI render must not follow a stale temporary symlink into an unrelated file', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-render-output-symlink-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), host = 'fixture-host';
+  const sentinel = join(root, 'unrelated-sentinel');
+  const output = join(root, 'fixture-service.env');
+  const pristine = 'INERT_UNRELATED_FILE_MUST_SURVIVE';
+  writeFileSync(sentinel, pristine, { mode: 0o600 });
+  const store = openStore(storePath);
+  await store.initHost(host);
+  await store.put('fixture', 'INERT_ENV_SECRET', {
+    holders: [host],
+    consumers: [{ host, service: 'fixture-service', variable: 'FIXTURE_VALUE' }],
+  });
+  // The former fixed <output>.tmp path can be left behind or redirected to
+  // unrelated content. Its presence must never become permission to overwrite.
+  symlinkSync(sentinel, output + '.tmp');
+  const rendered = spawnSync(process.execPath, [
+    new URL('../scripts/credentials.mjs', import.meta.url).pathname,
+    '--store', storePath, '--host', host, 'render', 'fixture-service', '--out', output,
+  ], { encoding: 'utf8' });
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.equal(readFileSync(sentinel, 'utf8'), pristine, 'render must never clobber an unrelated destination');
+  assert.equal(readFileSync(output, 'utf8'), 'FIXTURE_VALUE=INERT_ENV_SECRET\n');
+  assert.equal(rendered.stdout.includes('INERT_ENV_SECRET'), false, 'a file receipt must never include plaintext');
+});
+
 test('host enrollment refuses traversal and invalid host labels before changing identity or recipients', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-host-label-refusal-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
