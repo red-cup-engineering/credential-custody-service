@@ -19,6 +19,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdir
 import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
 import { placedPath, renderHost as renderHostCredentials } from './render-host.mjs';
+import { assertRenderableStore } from './render-source-admission.mjs';
 
 export const KINDS = Object.freeze(['api-key', 'oauth-client-secret', 'oauth-refresh-token', 'token', 'password', 'passphrase', 'private-key', 'session-secret', 'other']);
 const ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
@@ -33,11 +34,13 @@ export const fingerprint = (value) => createHash('sha256').update(value).digest(
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return fallback; throw error; } };
 const writeAtomic = (path, text, mode = 0o644) => { writeFileSync(`${path}.tmp`, text, { mode }); chmodSync(`${path}.tmp`, mode); renameSync(`${path}.tmp`, path); };
 
-export function openStore(dir) {
+export function openStore(dir, { create = true } = {}) {
   if (!dir) throw new TypeError('a credential store directory is required (a services section data/credentials/)');
-  for (const sub of ['registry', 'sealed', 'hosts']) mkdirSync(join(dir, sub), { recursive: true });
-  const ignore = join(dir, '.gitignore');
-  if (!existsSync(ignore)) writeFileSync(ignore, 'hosts/\n*.tmp\n');
+  if (create) {
+    for (const sub of ['registry', 'sealed', 'hosts']) mkdirSync(join(dir, sub), { recursive: true });
+    const ignore = join(dir, '.gitignore');
+    if (!existsSync(ignore)) writeFileSync(ignore, 'hosts/\n*.tmp\n');
+  }
   const recipientsPath = join(dir, 'recipients.json');
   const recipients = () => readJson(recipientsPath, { hosts: {}, recovery: [] });
   const recordPath = (id) => { if (!ID.test(id)) throw new TypeError(`credential id ${id} must be lowercase letters, digits, dots and dashes`); return join(dir, 'registry', `${id}.json`); };
@@ -120,6 +123,7 @@ export function openStore(dir) {
 
     /** The environment a service runs with on a host: each consumer variable bound to its credential's value. */
     async render(host, service) {
+      assertRenderableStore(dir, host);
       const lines = [];
       for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable && !c.file && !c.path) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
       return lines.sort().join('\n') + (lines.length ? '\n' : '');
@@ -177,6 +181,7 @@ export function openStore(dir) {
      * `files/<id>` per file credential. Re-run on a timer so rotations reach the services.
      */
     async renderHost(host, to) {
+      assertRenderableStore(dir, host);
       return renderHostCredentials(this, host, to);
     },
 
