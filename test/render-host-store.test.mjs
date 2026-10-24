@@ -569,3 +569,34 @@ test('direct credential reads reject substituted sealed source links without lea
   assert.equal(await opened.get('first', host), 'INERT_FIRST_CONFIDENTIAL',
     'restored original custody remains decryptable');
 });
+
+
+test('host enrollment refuses malformed recipient registries before creating private identity', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-recipient-integrity-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = 'fixture-host';
+  const malformed = [
+    { record: { hosts: null, recovery: [] }, recovery: false },
+    { record: { hosts: [], recovery: [] }, recovery: false },
+    { record: { hosts: {}, recovery: 'not-a-list' }, recovery: true },
+    { record: { hosts: {}, recovery: { broken: true } }, recovery: true },
+  ];
+  for (const [index, candidate] of malformed.entries()) {
+    const storePath = join(root, 'bad-' + index);
+    const opened = openStore(storePath);
+    const recipientFile = join(storePath, 'recipients.json');
+    const before = JSON.stringify(candidate.record, null, 2) + '\n';
+    writeFileSync(recipientFile, before);
+    await assert.rejects(opened.initHost(host, { recovery: candidate.recovery }),
+      /recipients.*(invalid|malformed|custody|shape)/iu,
+      'incomplete recipient metadata is not permission to leave an orphan private identity');
+    assert.equal(existsSync(join(storePath, 'hosts', host + '.identity')), false,
+      'invalid registration must be rejected before any private identity is published');
+    assert.equal(readFileSync(recipientFile, 'utf8'), before,
+      'invalid public registration evidence must not be rewritten or silently repaired');
+  }
+  const healthy = openStore(join(root, 'healthy'));
+  const enrolled = await healthy.initHost(host, { recovery: true });
+  assert.equal(enrolled.created, true, 'valid first recovery enrollment remains supported');
+  assert.equal(healthy.recipients().recovery.includes(enrolled.recipient), true);
+});
