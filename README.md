@@ -57,6 +57,8 @@ service's env file, so the service never names a path of its own.
 
 ## Safe runtime rendering
 
+Host rendering is fail-closed: `credentials-render-host` and both `credentials render` commands must find an existing store, registry, sealed directory, host identity with private permissions, and a declared host recipient. A moved, unreadable, incomplete or incorrectly selected source returns a nonzero error naming the store **before** reseal, output replacement or stale-file withdrawal; it must never turn missing source evidence into an empty authorized render. Intentionally empty *valid* stores can still withdraw previously managed outputs. A failed pull may fall back only to a complete, valid local store.
+
 Service names must be single filename components. The runtime directory and its `files/` directory are mode
 `0700`; outputs and the value-free ownership manifest are mode `0600`. Later renders withdraw only outputs
 recorded in that manifest and no longer declared for this host, preserving unrelated files. Use a fresh runtime
