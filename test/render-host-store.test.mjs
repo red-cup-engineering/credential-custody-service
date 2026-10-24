@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -78,6 +78,36 @@ test('re-enrolling an existing host returns its original public recipient, not a
 });
 
 
+
+test('host enrollment never overwrites a preexisting temporary symlink outside the custody store', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-temp-symlink-enrollment-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), sentinel = join(root, 'unrelated-sentinel');
+  const pristine = 'INERT_UNRELATED_CONTENT_MUST_SURVIVE';
+  writeFileSync(sentinel, pristine, { mode: 0o600 });
+  const store = openStore(storePath);
+  // A stale or malicious staging path must never be opened for writing:
+  // recipients.json.tmp is not the final declared source document.
+  symlinkSync(sentinel, join(storePath, 'recipients.json.tmp'));
+  const enrolled = await store.initHost('fixture-host');
+  assert.equal(enrolled.created, true);
+  assert.equal(readFileSync(sentinel, 'utf8'), pristine, 'identity enrollment must not overwrite unrelated files');
+  assert.equal(store.recipients().hosts['fixture-host'], enrolled.recipient);
+});
+
+test('sealed credential update never overwrites a preexisting temporary symlink outside the custody store', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-temp-symlink-seal-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), sentinel = join(root, 'unrelated-sentinel');
+  const pristine = 'INERT_UNRELATED_CONTENT_MUST_SURVIVE';
+  writeFileSync(sentinel, pristine, { mode: 0o600 });
+  const store = openStore(storePath);
+  await store.initHost('fixture-host');
+  symlinkSync(sentinel, join(storePath, 'sealed', 'fixture.id.age.tmp'));
+  await store.put('fixture.id', 'INERT_SEALED_VALUE', { holders: ['fixture-host'], consumers: [] });
+  assert.equal(readFileSync(sentinel, 'utf8'), pristine, 'sealing must not overwrite unrelated files');
+  assert.equal(await store.get('fixture.id', 'fixture-host'), 'INERT_SEALED_VALUE');
+});
 
 test('host enrollment refuses traversal and invalid host labels before changing identity or recipients', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-host-label-refusal-'));
