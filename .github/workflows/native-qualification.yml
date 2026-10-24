@@ -148,6 +148,20 @@ jobs:
           assert.deepEqual(manifest.outputs, ['fixture-service.env']);
           NODE
 
+          # Exercise the *freshly installed* single-service CLI publication
+          # path separately from render-host. The old deterministic .tmp name
+          # could follow a stale symlink and leak a plaintext secret into an
+          # unrelated file before reporting a successful render.
+          printf 'INERT_CLI_RENDER_SENTINEL' > "$consumer/cli-render-sentinel"
+          ln -s "$consumer/cli-render-sentinel" "$consumer/fixture-render.env.tmp"
+          "$installed/credentials" --store "$valid" --host fixture-host render fixture-service \
+            --out "$consumer/fixture-render.env" > "$consumer/cli-render-receipt"
+          [[ "$(cat "$consumer/cli-render-sentinel")" == INERT_CLI_RENDER_SENTINEL ]]
+          [[ "$(cat "$consumer/fixture-render.env")" == FIXTURE_TOKEN=INERT_FIXTURE_VALUE ]]
+          [[ -L "$consumer/fixture-render.env.tmp" ]]
+          [[ -s "$consumer/cli-render-receipt" ]]
+          ! grep -Fq 'INERT_FIXTURE_VALUE' "$consumer/cli-render-receipt"
+
           # The exact same genuinely installed executable must now refuse a
           # missing selected source without withdrawing that healthy generation.
           cp "$live/fixture-service.env" "$consumer/expected-kept"
@@ -424,7 +438,7 @@ jobs:
             packageVersion: JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).version,
             artifact: 'credential-custody.tgz',
             artifactSha256: sha256,
-            qualification: 'native Node tests, deterministic twin pack, private-path guard, installed healthy and quoted env render, duplicate-binding and control refusal, fail-closed preservation'
+            qualification: 'native Node tests, deterministic twin pack, private-path guard, installed healthy, single-service exclusive staging, quoted env render, duplicate-binding and control refusal, fail-closed preservation'
           };
           writeFileSync(join(qualified, 'qualification.json'), JSON.stringify(metadata, null, 2) + String.fromCharCode(10));
           NODE
