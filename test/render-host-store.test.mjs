@@ -136,6 +136,40 @@ test('single-service CLI render must not follow a stale temporary symlink into a
   assert.equal(rendered.stdout.includes('INERT_ENV_SECRET'), false, 'a file receipt must never include plaintext');
 });
 
+test('renaming custody refuses an existing orphaned sealed target without losing either encrypted value', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-rename-orphan-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), host = 'fixture-host';
+  const store = openStore(storePath);
+  await store.initHost(host);
+  await store.put('source', 'INERT_LIVE_SECRET', {
+    holders: [host],
+    consumers: [{ host, service: 'fixture-service', variable: 'TEST_VALUE' }],
+  });
+  const sourceRecord = join(storePath, 'registry/source.json');
+  const sourceCipher = join(storePath, 'sealed/source.age');
+  const targetRecord = join(storePath, 'registry/orphan.json');
+  const targetCipher = join(storePath, 'sealed/orphan.age');
+  const beforeRecord = readFileSync(sourceRecord);
+  const beforeCipher = readFileSync(sourceCipher);
+  // Interrupted recovery may leave encrypted bytes with no corresponding
+  // registry record. "Unclaimed ID" does not authorize destruction of bytes.
+  const orphanedBytes = 'INERT_UNRECONCILED_CIPHERTEXT_NOT_AUTHORIZED_TO_DELETE';
+  writeFileSync(targetCipher, orphanedBytes, { mode: 0o600 });
+  assert.throws(() => store.rename('source', 'orphan'), /sealed|exists|occupied|custody/iu);
+  assert.deepEqual(readFileSync(sourceRecord), beforeRecord);
+  assert.deepEqual(readFileSync(sourceCipher), beforeCipher);
+  assert.equal(readFileSync(targetCipher, 'utf8'), orphanedBytes);
+  assert.equal(existsSync(targetRecord), false);
+
+  // A free id continues to permit a normal rename with the same sealed value.
+  const moved = store.rename('source', 'renamed');
+  assert.deepEqual(moved, { from: 'source', to: 'renamed' });
+  assert.equal(await store.get('renamed', host), 'INERT_LIVE_SECRET');
+  assert.equal(existsSync(sourceRecord), false);
+  assert.equal(existsSync(sourceCipher), false);
+});
+
 test('host enrollment refuses traversal and invalid host labels before changing identity or recipients', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-host-label-refusal-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
