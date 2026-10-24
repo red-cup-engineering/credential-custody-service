@@ -1,4 +1,4 @@
-import { statSync, readFileSync } from 'node:fs';
+import { accessSync, constants, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { recipientOf } from './recipient-seal.mjs';
 
@@ -15,6 +15,16 @@ export async function assertRenderableStore(dir, host) {
     catch (error) { throw new Error(`${context} unavailable: ${path} (${error.code ?? 'unreadable'})`, { cause: error }); }
     if (kind === 'directory' ? !info.isDirectory() : !info.isFile()) {
       throw new Error(`${context} unavailable: ${path} is not a ${kind}`);
+    }
+    if (kind === 'directory') {
+      // stat alone succeeds on an unreadable sealed directory. With an empty
+      // registry, that mistake would authorize withdrawing prior credentials.
+      // Check both POSIX mode bits (including root callers) and actual access.
+      if (!(info.mode & 0o444) || !(info.mode & 0o111)) {
+        throw new Error(`${context} unavailable: ${path} unreadable directory`);
+      }
+      try { accessSync(path, constants.R_OK | constants.X_OK); }
+      catch (error) { throw new Error(`${context} unavailable: ${path} unreadable (${error.code ?? 'access denied'})`, { cause: error }); }
     }
     return info;
   };
