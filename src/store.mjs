@@ -59,7 +59,7 @@ export function openStore(dir, { create = true } = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || value.id !== id) {
       throw new TypeError(`credential registry entry ${path} id mismatch or invalid record`);
     }
-    if (!Array.isArray(value.holders) || value.holders.some((holder) => typeof holder !== 'string' || !holder)) {
+    if (!Array.isArray(value.holders) || value.holders.length === 0 || value.holders.some((holder) => typeof holder !== 'string' || !holder)) {
       throw new TypeError(`credential registry entry ${path} holders must be a list of hosts`);
     }
     // A host label alone does not declare any renderable delivery. Earlier
