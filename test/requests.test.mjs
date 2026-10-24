@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -57,4 +57,47 @@ test('a blocking condition that is empty, multi-line or secret-shaped is refused
     assert.throws(() => store.request('d.bad', { reason: 'r', by: 'h', blockedBy }), TypeError);
   }
   assert.deepEqual(store.requests(), []);
+});
+
+test('an interrupted JSONL request never appears as a healthy empty backlog', (t) => {
+  const { dir, store } = fixture(t), path = join(dir, 'requests.jsonl');
+  assert.deepEqual(store.requests(), [], 'an actually absent ledger is legitimately empty');
+  assert.equal(existsSync(path), false, 'reading an absent ledger creates nothing');
+  store.request('provider.first', { reason: 'existing account', by: 'host-a' });
+  store.request('provider.second', { reason: 'original customer need', by: 'host-b', blockedBy: 'requires reviewed provider' });
+  const valid = readFileSync(path);
+  appendFileSync(path, '{interrupted-last-line\n');
+  const original = readFileSync(path);
+  assert.throws(() => store.requests(), /credential requests.*line 3.*invalid JSON/iu,
+    'a trailing partial write cannot erase earlier recorded requests');
+  for (const action of [['requests', '--all'], ['requests'], ['audit']]) {
+    const refused = cli(dir, ...action);
+    assert.notEqual(refused.status, 0, 'a reader must refuse incomplete request custody');
+    assert.equal(refused.stdout, '', 'never claim an empty backlog when source is invalid');
+    assert.match(refused.stderr, /requests.*line 3.*invalid JSON/iu);
+    assert.equal(refused.stderr.includes('original customer need'), false, 'diagnostics must not disclose request details');
+  }
+  assert.deepEqual(readFileSync(path), original, 'the failed reader preserves every original byte for explicit reconciliation');
+  writeFileSync(path, valid);
+  assert.deepEqual(store.requests().map(row => row.id), ['provider.first', 'provider.second'],
+    'once original valid evidence returns, all requests become readable');
+});
+
+test('syntactically valid but unrecognized request states cannot disappear from audit', (t) => {
+  const { dir, store } = fixture(t), path = join(dir, 'requests.jsonl');
+  store.request('provider.first', { reason: 'original need', by: 'host-a' });
+  const valid = readFileSync(path);
+  for (const invalid of [{ id: 'foreign-state', state: 'completed' }, { state: 'requested' }, null, []]) {
+    writeFileSync(path, valid);
+    appendFileSync(path, JSON.stringify(invalid) + '\n');
+    const before = readFileSync(path);
+    assert.throws(() => store.requests(), /credential requests.*line 2.*invalid record/iu,
+      'unrecognized or malformed records cannot be silently excluded from requested/deferred views');
+    const audit = cli(dir, 'audit');
+    assert.notEqual(audit.status, 0);
+    assert.equal(audit.stdout, '');
+    assert.deepEqual(readFileSync(path), before);
+  }
+  writeFileSync(path, valid);
+  assert.deepEqual(store.requests().map(row => row.id), ['provider.first']);
 });
