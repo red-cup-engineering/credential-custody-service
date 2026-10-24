@@ -522,3 +522,50 @@ test('registered rotation preserves unresolved sealed entries rather than legiti
   assert.equal(rotated.id, 'first');
   assert.equal(await opened.get('first', host), 'INERT_VALID_ROTATION');
 });
+
+
+test('direct credential reads reject substituted sealed source links without leaking another value', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-direct-read-source-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
+  const opened = openStore(storePath);
+  await opened.initHost(host);
+  await opened.put('first', 'INERT_FIRST_CONFIDENTIAL', {
+    holders: [host], consumers: [{ host, service: 'fixture', variable: 'FIXTURE_KEY' }],
+  });
+  await opened.put('other', 'INERT_OTHER_CONFIDENTIAL', { holders: [host], consumers: [] });
+  assert.equal(await opened.get('first', host), 'INERT_FIRST_CONFIDENTIAL',
+    'healthy credential reads still work');
+  await assert.rejects(opened.get('other', 'unheld-host'), /does not hold/u,
+    'an unheld host never receives an unrelated credential');
+
+  await opened.renderHost(host, runtime);
+  const sealed = join(storePath, 'sealed/first.age');
+  const other = join(storePath, 'sealed/other.age');
+  const original = readFileSync(sealed), otherCipher = readFileSync(other);
+  const priorEnv = readFileSync(join(runtime, 'fixture.env'));
+  const manifest = readFileSync(join(runtime, '.credential-custody-render.json'));
+
+  rmSync(sealed);
+  symlinkSync(other, sealed);
+  await assert.rejects(opened.get('first', host), /sealed credential source.*(symlink|regular|unavailable)/iu,
+    'a registry grant for first must not decrypt substituted ciphertext belonging to other');
+  await assert.rejects(opened.renderHost(host, runtime), /sealed.*(source|regular|unavailable)/iu,
+    'a linked source is incomplete, not an authorized new render generation');
+  assert.deepEqual(readFileSync(join(runtime, 'fixture.env')), priorEnv);
+  assert.deepEqual(readFileSync(join(runtime, '.credential-custody-render.json')), manifest);
+  assert.deepEqual(readFileSync(other), otherCipher);
+  assert.equal(lstatSync(sealed).isSymbolicLink(), true);
+
+  rmSync(sealed);
+  symlinkSync(join(root, 'unresolved-sealed-source.age'), sealed);
+  await assert.rejects(opened.get('first', host), /sealed credential source.*(symlink|regular|unavailable)/iu,
+    'dangling source evidence must also fail closed, not be followed');
+  assert.equal(lstatSync(sealed).isSymbolicLink(), true);
+  assert.deepEqual(readFileSync(join(runtime, 'fixture.env')), priorEnv);
+
+  rmSync(sealed);
+  writeFileSync(sealed, original);
+  assert.equal(await opened.get('first', host), 'INERT_FIRST_CONFIDENTIAL',
+    'restored original custody remains decryptable');
+});
