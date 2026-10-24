@@ -58,3 +58,21 @@ test('bind gives a held credential another service without reading it, as a vari
   assert.notEqual(elsewhere.status, 0);
   assert.match(elsewhere.stderr, /not sealed to other-host/u);
 });
+
+test('re-enrolling an existing host returns its original public recipient, not a Promise', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-host-reenrollment-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, 'store'), selectedHost = 'fixture-host';
+  const opened = openStore(path);
+  const enrolled = await opened.initHost(selectedHost);
+  const identityBefore = readFileSync(join(path, 'hosts', selectedHost + '.identity'));
+  const recipientsBefore = readFileSync(join(path, 'recipients.json'));
+  const repeated = await opened.initHost(selectedHost);
+  assert.equal(enrolled.created, true);
+  assert.equal(repeated.created, false);
+  assert.equal(typeof enrolled.recipient, 'string');
+  assert.equal(typeof repeated.recipient, 'string', 'the repeat result must be serializable public data');
+  assert.equal(repeated.recipient, enrolled.recipient);
+  assert.deepEqual(readFileSync(join(path, 'hosts', selectedHost + '.identity')), identityBefore);
+  assert.deepEqual(readFileSync(join(path, 'recipients.json')), recipientsBefore);
+});
