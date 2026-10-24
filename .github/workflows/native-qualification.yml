@@ -65,6 +65,23 @@ jobs:
           assert.match(first.recipient, /^age1[0-9a-z]+$/u);
           assert.equal(again.recipient, first.recipient, 'repeat enrollment must return public recipient, never an unresolved Promise');
           NODE
+          # The genuinely installed producer must not follow predictable
+          # .tmp staging symlinks into an unrelated file, for either public
+          # recipient registration or sealed credential publication.
+          staging="$consumer/staging-symlink"
+          mkdir -p "$staging"
+          printf 'INERT_STAGING_GUARD' > "$consumer/staging-guard"
+          ln -s "$consumer/staging-guard" "$staging/recipients.json.tmp"
+          "$installed/credentials" --store "$staging" --host staging-host init-host > "$consumer/staging-init"
+          [[ "$(cat "$consumer/staging-guard")" == INERT_STAGING_GUARD ]]
+          [[ -s "$staging/recipients.json" ]]
+          ln -s "$consumer/staging-guard" "$staging/sealed/fixture.token.age.tmp"
+          printf 'INERT_STAGING_VALUE' | "$installed/credentials" --store "$staging" --host staging-host \
+            --holders staging-host --kind token put fixture.token > "$consumer/staging-put"
+          [[ "$(cat "$consumer/staging-guard")" == INERT_STAGING_GUARD ]]
+          [[ -s "$staging/sealed/fixture.token.age" ]]
+          [[ -s "$staging/registry/fixture.token.json" ]]
+
           # This installed binary must reject path-shaped and malformed host
           # labels before touching recipients or escaping the private host dir.
           printf '%s' 'INERT_KEEP' > "$consumer/escaped.identity"
