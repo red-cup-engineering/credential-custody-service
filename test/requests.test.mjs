@@ -130,3 +130,23 @@ test('a linked external request file may not receive newly requested credential 
   assert.deepEqual(readFileSync(external), before, 'no external file may be changed on refusal');
   assert.equal(existsSync(path), true, 'source evidence survives refusal without path replacement');
 });
+
+test('a corrupt existing request backlog refuses subsequent append without a false success receipt', t => {
+  const { dir, store } = fixture(t), path = join(dir, 'requests.jsonl');
+  store.request('prior.need', { reason: 'original need', by: 'host-a' });
+  const valid = readFileSync(path);
+  appendFileSync(path, '{incomplete-append\n');
+  const corrupt = readFileSync(path);
+  assert.throws(() => store.request('later.need', { reason: 'still-needed', by: 'host-b' }),
+    /credential requests.*line 2.*invalid JSON/iu,
+    'new requests cannot be reported accepted into unreadable custody');
+  assert.deepEqual(readFileSync(path), corrupt, 'the new request must not silently append behind corrupted source');
+  const attempted = cli(dir, 'request', 'later.need', '--reason', 'still-needed', '--by', 'host-b');
+  assert.notEqual(attempted.status, 0);
+  assert.equal(attempted.stdout, '', 'CLI must never acknowledge new Work on an unreadable ledger');
+  assert.deepEqual(readFileSync(path), corrupt);
+  writeFileSync(path, valid);
+  const received = store.request('later.need', { reason: 'still-needed', by: 'host-b' });
+  assert.equal(received.id, 'later.need');
+  assert.deepEqual(store.requests().map(row => row.id), ['prior.need', 'later.need']);
+});
