@@ -62,9 +62,22 @@ export function openStore(dir, { create = true } = {}) {
     if (!Array.isArray(value.holders) || value.holders.some((holder) => typeof holder !== 'string' || !holder)) {
       throw new TypeError(`credential registry entry ${path} holders must be a list of hosts`);
     }
-    if (!Array.isArray(value.consumers) || value.consumers.some((consumer) => !consumer || typeof consumer !== 'object'
-      || Array.isArray(consumer) || typeof consumer.host !== 'string' || !consumer.host)) {
-      throw new TypeError(`credential registry entry ${path} consumers must be a list of host-bound records`);
+    // A host label alone does not declare any renderable delivery. Earlier
+    // versions silently interpreted such partial records as an empty service
+    // roster, withdrawing credentials from an otherwise healthy generation.
+    // An explicit placed/file consumer may omit a service variable; an env
+    // consumer must supply both a service and a valid assignment name.
+    const delivers = (consumer) => {
+      if (!consumer || typeof consumer !== 'object' || Array.isArray(consumer)
+        || typeof consumer.host !== 'string' || !consumer.host) return false;
+      const file = (typeof consumer.file === 'string' && consumer.file.length > 0)
+        || (typeof consumer.path === 'string' && consumer.path.length > 0);
+      const variable = typeof consumer.service === 'string' && consumer.service.length > 0
+        && typeof consumer.variable === 'string' && /^[A-Z][A-Z0-9_]*$/u.test(consumer.variable);
+      return file || variable;
+    };
+    if (!Array.isArray(value.consumers) || value.consumers.some((consumer) => !delivers(consumer))) {
+      throw new TypeError(`credential registry entry ${path} consumers must declare actual host-bound file or service-variable delivery`);
     }
     return value;
   };
