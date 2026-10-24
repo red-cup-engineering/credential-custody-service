@@ -95,6 +95,35 @@ jobs:
           cp "$live/fixture-service.env" "$consumer/expected-kept"
           cp "$live/.credential-custody-render.json" "$consumer/expected-manifest"
 
+          # Exercise the genuinely installed producer with two separately
+          # sealed credentials claiming the same service EnvironmentFile key.
+          # The renderer must not allow silent last-assignment-wins, including
+          # when the competing credential is a file-path binding.
+          printf 'INERT_COLLISION' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.other > "$consumer/other-put"
+          "$installed/credentials" --store "$valid" --host fixture-host \
+            --service fixture-service --variable FIXTURE_TOKEN bind fixture.other > "$consumer/other-bind"
+          for binding_kind in value file; do
+            if [[ "$binding_kind" == file ]]; then
+              "$installed/credentials" --store "$valid" --host fixture-host \
+                --service fixture-service --variable FIXTURE_TOKEN --path keys/other.pem bind fixture.other > "$consumer/other-file-bind"
+            fi
+            if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+              "$installed/credentials-render-host" > "$consumer/collision-stdout" 2> "$consumer/collision-stderr"; then
+              echo "Installed renderer admitted duplicate service environment binding ($binding_kind)" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/collision-stdout" ]]
+            grep -Eq 'duplicate environment binding FIXTURE_TOKEN' "$consumer/collision-stderr"
+            if grep -Fq -- 'INERT_COLLISION' "$consumer/collision-stderr"; then
+              echo "Installed renderer disclosed another credential while refusing duplicate binding" >&2
+              exit 1
+            fi
+            cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+            cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+          done
+          rm -- "$valid/registry/fixture.other.json" "$valid/sealed/fixture.other.age"
+
           # Installed-consumer regression: a file delivery cannot launder a
           # forged environment variable into a previously healthy generation.
           # The record and sealed value are real; only the consumer metadata
@@ -317,7 +346,7 @@ jobs:
             packageVersion: JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).version,
             artifact: 'credential-custody.tgz',
             artifactSha256: sha256,
-            qualification: 'native Node tests, deterministic twin pack, private-path guard, installed healthy and quoted env render, control refusal and fail-closed preservation'
+            qualification: 'native Node tests, deterministic twin pack, private-path guard, installed healthy and quoted env render, duplicate-binding and control refusal, fail-closed preservation'
           };
           writeFileSync(join(qualified, 'qualification.json'), JSON.stringify(metadata, null, 2) + String.fromCharCode(10));
           NODE
