@@ -54,7 +54,8 @@ const { values: o, positionals: [command, arg, arg2] } = parseArgs({ allowPositi
 const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? process.env.CREDENTIALS_HOST;
 const fail = (message) => { process.stderr.write(`${message}\n`); process.exit(2); };
 if (!storeDir) fail('--store <services section data/credentials dir> (or CREDENTIALS_STORE) is required');
-const store = openStore(storeDir);
+// Rendering must not synthesize a missing store before verifying the host source.
+const store = openStore(storeDir, { create: command !== 'render' && command !== 'render-host' });
 const needHost = () => host ?? fail('--host <this host> (or CREDENTIALS_HOST) is required');
 const list = (s) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 const readStdin = () => readFileSync(0, 'utf8').replace(/\r?\n$/u, '');
