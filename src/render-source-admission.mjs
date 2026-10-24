@@ -1,5 +1,6 @@
 import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { recipientOf } from './recipient-seal.mjs';
 
 /** Refuse incomplete or misselected source custody before any runtime output or reseal. */
 export function assertRenderableStore(dir, host) {
@@ -32,5 +33,13 @@ export function assertRenderableStore(dir, host) {
   catch (error) { throw new Error(`${context} unavailable: cannot read recipients at ${recipientsFile}`, { cause: error }); }
   if (typeof recipients?.hosts?.[host] !== 'string' || !/^age1[0-9a-z]+$/u.test(recipients.hosts[host])) {
     throw new Error(`${context} unavailable: no valid recipient for host in ${recipientsFile}`);
+  }
+  // A syntactically plausible but unrelated source can otherwise authorize a
+  // zero-credential render and withdraw existing files under the wrong key.
+  let derivedRecipient;
+  try { derivedRecipient = recipientOf(identity); }
+  catch (error) { throw new Error(`${context} unavailable: invalid host identity at ${identityFile}`, { cause: error }); }
+  if (derivedRecipient !== recipients.hosts[host]) {
+    throw new Error(`${context} unavailable: host identity and recipient mismatch in ${recipientsFile}`);
   }
 }
