@@ -192,3 +192,23 @@ test('a partial registry record must never be interpreted as permission to erase
   assert.equal(received.state, 'complete');
   assert.deepEqual(received.outputs, []);
 });
+
+test('a consumer without any declared delivery cannot silently retire a prior service', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  const path = join(f.store, 'registry', 'damaged.json');
+  const cases = [
+    { host },
+    { host, service: 'fixture-service' },
+    { host, variable: '' },
+    { host, file: false },
+  ];
+  for (const consumer of cases) {
+    writeFileSync(path, JSON.stringify({ id: 'damaged', holders: [host], consumers: [consumer] }) + '\n');
+    for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+      refuseWithoutPruning(result, f.store, f.runtime, manifest, /registry.*damaged[.]json.*consumers/u);
+    }
+    await assert.rejects(opened.renderHost(host, f.runtime), /registry.*damaged[.]json.*consumers/u);
+  }
+});
