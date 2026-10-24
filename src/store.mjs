@@ -253,6 +253,47 @@ export function openStore(dir, { create = true } = {}) {
     return [...new Set(keys)];
   };
 
+  // Request records are source-owned Work cues. A partial/corrupt log must
+  // never become an apparently healthy empty queue. Open the exact ledger
+  // without following external symlinks or blocking on special files.
+  const requestsPath = join(dir, 'requests.jsonl');
+  const openRequests = (flags, { absentOkay = false } = {}) => {
+    let fd;
+    try { fd = openSync(requestsPath, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644); }
+    catch (error) {
+      if (absentOkay && error.code === 'ENOENT') return undefined;
+      throw new Error(`credential requests source ${requestsPath} unavailable (${error.code ?? 'cannot open'})`, { cause: error });
+    }
+    try {
+      if (!fstatSync(fd).isFile()) throw new Error(`credential requests source ${requestsPath} unavailable (not a regular file)`);
+    } catch (error) { closeSync(fd); throw error; }
+    return fd;
+  };
+  const readRequests = () => {
+    const fd = openRequests(constants.O_RDONLY, { absentOkay: true });
+    if (fd === undefined) return [];
+    let contents;
+    try { contents = readFileSync(fd, 'utf8'); }
+    catch (error) { throw new Error(`credential requests source ${requestsPath} unavailable (cannot read)`, { cause: error }); }
+    finally { closeSync(fd); }
+    const rows = [];
+    for (const [index, line] of contents.split('\n').entries()) {
+      if (!line.trim()) continue;
+      let row;
+      try { row = JSON.parse(line); }
+      catch (error) { throw new Error(`credential requests source ${requestsPath} line ${index + 1} contains invalid JSON`, { cause: error }); }
+      if (!row || typeof row !== 'object' || Array.isArray(row)
+          || typeof row.id !== 'string' || !row.id.trim()
+          || !['requested', 'deferred'].includes(row.state)
+          || (row.state === 'deferred' && (typeof row.blockedBy !== 'string' || !row.blockedBy.trim()))
+          || (row.state === 'requested' && Object.hasOwn(row, 'blockedBy'))) {
+        throw new Error(`credential requests source ${requestsPath} line ${index + 1} contains invalid record (id/state)`);
+      }
+      rows.push(row);
+    }
+    return rows;
+  };
+
   return {
     dir, recipients, record, records,
 
@@ -556,10 +597,12 @@ export function openStore(dir, { create = true } = {}) {
         blockedBy = text;
       }
       const row = { at: new Date().toISOString(), id, reason, by, consumers, state: blockedBy === undefined ? 'requested' : 'deferred', ...(blockedBy === undefined ? {} : { blockedBy }) };
-      appendFileSync(join(dir, 'requests.jsonl'), `${JSON.stringify(row)}\n`);
+      const fd = openRequests(constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND);
+      try { appendFileSync(fd, `${JSON.stringify(row)}\n`); }
+      finally { closeSync(fd); }
       return row;
     },
-    requests: () => { try { return readFileSync(join(dir, 'requests.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } },
+    requests: readRequests,
   };
 }
 
