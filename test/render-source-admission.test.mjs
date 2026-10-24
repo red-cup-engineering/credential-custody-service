@@ -351,3 +351,41 @@ test('orphaned sealed custody without registry must not authorize withdrawal of 
   assert.equal(healthy.status, 0, healthy.stderr);
   assert.deepEqual(JSON.parse(healthy.stdout).services, []);
 });
+
+test('invalid holder or consumer hosts never turn corrupted custody into an authorized empty render', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  await opened.put('host-claim', 'INERT_HOST_CLAIM', {
+    holders: [host],
+    consumers: [{ host, service: 'example-service', variable: 'EXAMPLE_TOKEN' }],
+  });
+  const path = join(f.store, 'registry', 'host-claim.json');
+  const source = readFileSync(path, 'utf8');
+  const original = JSON.parse(source);
+  // Each malformed claim previously passed source admission. In particular,
+  // a forged different host or a zero-delivery record withdrew kept.env.
+  for (const [kind, invalid] of [
+    ['consumer', '../other-host'],
+    ['consumer', 'OTHER-HOST'],
+    ['consumer', 'other\nrole'],
+    ['holder', '../other-host'],
+    ['holder', 'OTHER-HOST'],
+  ]) {
+    const record = { ...original };
+    if (kind === 'consumer') record.consumers = [{ ...original.consumers[0], host: invalid }];
+    else { record.holders = [invalid]; record.consumers = []; }
+    writeFileSync(path, JSON.stringify(record) + '\n');
+    for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+      refuseWithoutPruning(result, f.store, f.runtime, manifest,
+        kind === 'consumer' ? /registry.*host-claim[.]json.*consumers/u : /registry.*host-claim[.]json.*holders/u);
+      assert.equal(result.stderr.includes('INERT_HOST_CLAIM'), false, 'do not leak the value');
+    }
+    await assert.rejects(opened.renderHost(host, f.runtime),
+      kind === 'consumer' ? /registry.*host-claim[.]json.*consumers/u : /registry.*host-claim[.]json.*holders/u);
+  }
+  writeFileSync(path, source);
+  const restored = runUnit(f.store, join(f.root, 'healthy-restored'));
+  assert.equal(restored.status, 0, restored.stderr, 'valid host claims continue to render');
+  assert.deepEqual(JSON.parse(restored.stdout).services, ['example-service']);
+});
