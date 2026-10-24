@@ -173,6 +173,7 @@ test('a partial registry record must never be interpreted as permission to erase
     ['string consumers', { id: 'partial', holders: [host], consumers: '' }],
     ['false consumer entry', { id: 'partial', holders: [host], consumers: [false] }],
     ['absent holders', { id: 'partial', consumers: [] }],
+    ['empty holders', { id: 'partial', holders: [], consumers: [] }],
   ];
   for (const [label, record] of invalid) {
     writeFileSync(path, JSON.stringify(record) + '\n');
