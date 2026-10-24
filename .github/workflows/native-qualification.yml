@@ -44,7 +44,8 @@ jobs:
             echo "Unexpected private or runtime material in distributable" >&2
             exit 1
           fi
-          npm install --offline --ignore-scripts --no-audit --no-fund --prefix "$consumer" "${a[0]}"
+          # Pack fabrication is offline; the fresh consumer legitimately resolves dependencies from the house registry.
+          npm install --ignore-scripts --no-audit --no-fund --registry=https://registry.561.group/ --prefix "$consumer" "${a[0]}"
           cd "$consumer"
           node --input-type=module -e "const { openStore } = await import('@red-cup-engineering/credential-custody-service/store'); if (typeof openStore !== 'function') process.exit(1)"
           if CREDENTIALS_STORE="$consumer/missing-original" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$consumer/live" \
