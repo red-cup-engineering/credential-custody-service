@@ -161,3 +161,34 @@ test('a registry filename/record-id mismatch cannot silently withdraw live crede
   }
   await assert.rejects(opened.renderHost(host, f.runtime), /registry.*renamed-record[.]json.*id.*mismatch/u);
 });
+
+test('a partial registry record must never be interpreted as permission to erase a healthy generation', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  const path = join(f.store, 'registry', 'partial.json');
+  const invalid = [
+    ['absent consumers', { id: 'partial', holders: [host] }],
+    ['null consumers', { id: 'partial', holders: [host], consumers: null }],
+    ['string consumers', { id: 'partial', holders: [host], consumers: '' }],
+    ['false consumer entry', { id: 'partial', holders: [host], consumers: [false] }],
+    ['absent holders', { id: 'partial', consumers: [] }],
+  ];
+  for (const [label, record] of invalid) {
+    writeFileSync(path, JSON.stringify(record) + '\n');
+    for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+      refuseWithoutPruning(result, f.store, f.runtime, manifest, /registry.*partial[.]json.*(holders|consumers)/u);
+    }
+    await assert.rejects(opened.renderHost(host, f.runtime), /registry.*partial[.]json.*(holders|consumers)/u, label);
+  }
+  // The refusal must not incorrectly prohibit an intentionally empty but
+  // complete source: an authorized retirement can still withdraw stale output.
+  rmSync(path);
+  await opened.put('partial', 'INERT_FIXTURE_VALUE', { holders: [host] });
+  const healthy = runUnit(f.store, f.runtime);
+  assert.equal(healthy.status, 0, healthy.stderr);
+  assert.equal(existsSync(join(f.runtime, 'kept.env')), false, 'valid empty consumers retire stale output');
+  const received = JSON.parse(readFileSync(join(f.runtime, '.credential-custody-render.json'), 'utf8'));
+  assert.equal(received.state, 'complete');
+  assert.deepEqual(received.outputs, []);
+});
