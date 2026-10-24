@@ -12,7 +12,7 @@ const PLACED_MANIFEST = '.credential-custody-render-placed.json';
 const everyVersion = (name) => name.startsWith('files/') || (name.endsWith('.env') && !name.includes('/'));
 const FILE_ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
 
-function serviceName(value) {
+export function serviceName(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > 240 || /[\u0000-\u001f\u007f/\\]/u.test(value) || value === '.' || value === '..') {
     throw new TypeError('a rendered service must be a single nonempty filename component');
   }
