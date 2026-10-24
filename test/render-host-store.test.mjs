@@ -689,3 +689,31 @@ test('same credential multi-service placed output and other-host independent pla
   assert.equal(readFileSync(join(root, 'one/keys/shared.pem'), 'utf8'), 'INERT_FIRST');
   assert.equal(readFileSync(join(root, 'two/keys/shared.pem'), 'utf8'), 'INERT_SECOND');
 });
+
+test('bulk conversion of legacy file consumers refuses collisions before editing any record', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-legacy-place-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const selected = 'fixture-host', path = join(root, 'source'), originals = join(root, 'legacy'), store = openStore(path);
+  await store.initHost(selected);
+  const firstFile = join(originals, 'keys', 'shared.pem');
+  await store.put('first', 'INERT_FIRST', {
+    holders: [selected], consumers: [{ host: selected, service: 'one', file: firstFile }],
+  });
+  await store.put('second', 'INERT_SECOND', {
+    holders: [selected], consumers: [{ host: selected, service: 'two', file: firstFile }],
+  });
+  const before = ['first', 'second'].map(id => readFileSync(join(path, 'registry', id + '.json')));
+  assert.throws(() => store.placeFiles(selected, originals), /conflicting file placement/u,
+    'no legacy record may be converted if another credential would occupy the same placed output');
+  assert.deepEqual(['first', 'second'].map(id => readFileSync(join(path, 'registry', id + '.json'))), before,
+    'the conversion must fail as a whole without a partly rewritten registry');
+  await store.put('second', 'INERT_SECOND', {
+    consumers: [{ host: selected, service: 'two', file: join(originals, 'keys', 'second.pem') }],
+  });
+  const placed = store.placeFiles(selected, originals);
+  assert.deepEqual(placed.map(entry => entry.path).sort(), ['keys/second.pem', 'keys/shared.pem']);
+  const healthy = await store.renderHost(selected, join(root, 'runtime'));
+  assert.deepEqual(healthy.files, ['keys/second.pem', 'keys/shared.pem']);
+  assert.equal(readFileSync(join(root, 'runtime/keys/shared.pem'), 'utf8'), 'INERT_FIRST');
+  assert.equal(readFileSync(join(root, 'runtime/keys/second.pem'), 'utf8'), 'INERT_SECOND');
+});
