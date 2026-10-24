@@ -146,6 +146,39 @@ jobs:
           printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
             --holders fixture-host --kind token put fixture.token > "$consumer/restore-put"
 
+          # Installed-consumer positive and negative EnvironmentFile receiving:
+          # preserve spaces, quotes and backslashes from sealed values, then
+          # refuse a tab/control value without overwriting that valid generation.
+          # The destination deliberately contains a literal backslash too.
+          escaped="$consumer/escaped-runtime\\with spaces"
+          printf '%s' '  INERT\route "quoted" $marker  ' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/escaped-put"
+          CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$escaped" \
+            "$installed/credentials-render-host" > "$consumer/escaped-stdout"
+          node --input-type=module - "$escaped" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const original = '  INERT\\route "quoted" $marker  ';
+          assert.equal(readFileSync(join(process.argv[2], 'fixture-service.env'), 'utf8'),
+            'FIXTURE_TOKEN=' + JSON.stringify(original) + '\n');
+          NODE
+          cp "$escaped/fixture-service.env" "$consumer/escaped-expected-env"
+          cp "$escaped/.credential-custody-render.json" "$consumer/escaped-expected-manifest"
+          printf 'INERT_CONTROL\tVALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/control-put"
+          if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$escaped" \
+            "$installed/credentials-render-host" > "$consumer/control-stdout" 2> "$consumer/control-stderr"; then
+            echo "Installed renderer admitted unsupported environment control character" >&2
+            exit 1
+          fi
+          [[ ! -s "$consumer/control-stdout" ]]
+          grep -Eq 'environment credential.*control characters' "$consumer/control-stderr"
+          cmp -- "$escaped/fixture-service.env" "$consumer/escaped-expected-env"
+          cmp -- "$escaped/.credential-custody-render.json" "$consumer/escaped-expected-manifest"
+          printf 'INERT_FIXTURE_VALUE' | "$installed/credentials" --store "$valid" --host fixture-host \
+            --holders fixture-host --kind token put fixture.token > "$consumer/restore-post-escape"
+
           # A complete-looking, identity-valid source with unreadable sealed/
           # must not be treated as an intentionally empty authorized source.
           # This uses the genuinely packed-and-installed executable.
@@ -259,7 +292,7 @@ jobs:
             packageVersion: JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).version,
             artifact: 'credential-custody.tgz',
             artifactSha256: sha256,
-            qualification: 'native Node tests, deterministic twin pack, private-path guard, real installed healthy render then fail-closed preservation'
+            qualification: 'native Node tests, deterministic twin pack, private-path guard, installed healthy and quoted env render, control refusal and fail-closed preservation'
           };
           writeFileSync(join(qualified, 'qualification.json'), JSON.stringify(metadata, null, 2) + String.fromCharCode(10));
           NODE
