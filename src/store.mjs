@@ -53,7 +53,18 @@ export function openStore(dir, { create = true } = {}) {
     return readFileSync(path, 'utf8').trim();
   }
   const record = (id) => readJson(recordPath(id), null);
-  const records = () => readdirSync(join(dir, 'registry')).filter((f) => f.endsWith('.json')).map((f) => readJson(join(dir, 'registry', f), null)).filter(Boolean);
+  // Once a registry entry has been enumerated it must be read successfully:
+  // treating ENOENT as a missing optional record silently erases a credential
+  // from the render plan, allowing a later manifest reconciliation to withdraw
+  // its previously healthy output. Only record(id) may have an absent fallback.
+  const records = () => readdirSync(join(dir, 'registry')).filter((f) => f.endsWith('.json')).map((f) => {
+    const path = join(dir, 'registry', f);
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError(`credential registry entry ${path} must be a record object`);
+    }
+    return value;
+  });
   const sealFor = (holders) => {
     const r = recipients(), keys = [...holders.map((h) => { if (!r.hosts[h]) throw new Error(`host ${h} has no recipient in recipients.json`); return r.hosts[h]; }), ...r.recovery];
     return [...new Set(keys)];
