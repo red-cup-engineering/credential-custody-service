@@ -96,6 +96,13 @@ test('missing sealed, registry, host identity and recipients never withdraw a pr
   writeFileSync(recipientsPath, '{malformed json');
   refuseWithoutPruning(runUnit(f.store, f.runtime), f.store, f.runtime, manifest, /cannot read recipients/u);
   writeFileSync(recipientsPath, recipients);
+  // A different valid age recipient is not the selected host's public half.
+  await opened.initHost('other-valid-holder');
+  const mismatched = JSON.parse(readFileSync(recipientsPath, 'utf8'));
+  mismatched.hosts[host] = mismatched.hosts['other-valid-holder'];
+  writeFileSync(recipientsPath, JSON.stringify(mismatched));
+  refuseWithoutPruning(runUnit(f.store, f.runtime), f.store, f.runtime, manifest, /identity and recipient mismatch/u);
+  writeFileSync(recipientsPath, recipients);
   writeFileSync(identityPath, 'INVALID_HOST_IDENTITY\n', { mode: 0o600 });
   refuseWithoutPruning(runUnit(f.store, f.runtime), f.store, f.runtime, manifest, /invalid host identity/u);
   writeFileSync(identityPath, identity, { mode: 0o600 });
