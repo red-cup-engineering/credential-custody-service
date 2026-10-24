@@ -89,7 +89,7 @@ export function openStore(dir, { create = true } = {}) {
     /** Create this host's identity (once) and record its public recipient. */
     async initHost(host, { recovery = false } = {}) {
       const path = identityPath(host);
-      if (existsSync(path)) return { host, recipient: recipientOf(identity(host)), created: false };
+      if (existsSync(path)) return { host, recipient: await recipientOf(identity(host)), created: false };
       const id = await generateIdentity(), recipient = await recipientOf(id);
       writeAtomic(path, `${id}\n`, 0o600);
       const r = recipients();
