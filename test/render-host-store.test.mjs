@@ -170,6 +170,41 @@ test('renaming custody refuses an existing orphaned sealed target without losing
   assert.equal(existsSync(sourceCipher), false);
 });
 
+test('put refuses orphaned sealed payloads and dangling links instead of overwriting unresolved custody', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-put-orphan-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), host = 'fixture-host';
+  const store = openStore(storePath);
+  await store.initHost(host);
+  const orphan = join(storePath, 'sealed', 'unclaimed.age');
+  const preserved = 'INERT_ORPHAN_CIPHERTEXT_MUST_NOT_BE_OVERWRITTEN';
+  writeFileSync(orphan, preserved, { mode: 0o600 });
+  await assert.rejects(
+    store.put('unclaimed', 'INERT_NEW_VALUE', { holders: [host], consumers: [] }),
+    /sealed|orphan|exists|custody/iu,
+    'an absent registry record never authorizes overwriting existing encrypted evidence',
+  );
+  assert.equal(readFileSync(orphan, 'utf8'), preserved);
+  assert.equal(existsSync(join(storePath, 'registry/unclaimed.json')), false);
+
+  const missing = join(root, 'missing-ciphertext');
+  const dangling = join(storePath, 'sealed', 'dangling.age');
+  symlinkSync(missing, dangling);
+  await assert.rejects(
+    store.put('dangling', 'INERT_OTHER_VALUE', { holders: [host], consumers: [] }),
+    /sealed|orphan|exists|custody/iu,
+    'a dangling symlink also reserves the name for explicit custody reconciliation',
+  );
+  assert.equal(existsSync(missing), false, 'refusal must not create the symlink target');
+  assert.equal(existsSync(join(storePath, 'registry/dangling.json')), false);
+  const { lstatSync, readlinkSync } = await import('node:fs');
+  assert.equal(lstatSync(dangling).isSymbolicLink(), true);
+  assert.equal(readlinkSync(dangling), missing);
+
+  await store.put('new-id', 'INERT_VALID_VALUE', { holders: [host], consumers: [] });
+  assert.equal(await store.get('new-id', host), 'INERT_VALID_VALUE', 'fresh unoccupied custody remains supported');
+});
+
 test('host enrollment refuses traversal and invalid host labels before changing identity or recipients', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-host-label-refusal-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
