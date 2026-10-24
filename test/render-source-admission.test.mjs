@@ -324,3 +324,30 @@ test('missing sealed payload for a complete zero-consumer record must not retire
   assert.equal(healthy.status, 0, healthy.stderr);
   assert.deepEqual(JSON.parse(healthy.stdout).services, []);
 });
+
+test('orphaned sealed custody without registry must not authorize withdrawal of previously rendered files', async t => {
+  const f = fixture(t), manifest = seedLiveOutput(f.runtime);
+  const opened = openStore(f.store);
+  await opened.initHost(host);
+  await opened.put('orphaned', 'INERT_ORPHANED_VALUE', {
+    holders: [host],
+    consumers: [{ host, service: 'example-service', variable: 'EXAMPLE_TOKEN' }],
+  });
+  const sealed = join(f.store, 'sealed', 'orphaned.age');
+  const registry = join(f.store, 'registry', 'orphaned.json');
+  const originalSealed = readFileSync(sealed);
+  // Model interrupted registry maintenance: the ciphertext still exists and
+  // belongs to the store, but its public record can no longer be enumerated.
+  rmSync(registry);
+  for (const result of [runUnit(f.store, f.runtime), runCli(f.store, f.runtime)]) {
+    refuseWithoutPruning(result, f.store, f.runtime, manifest, /orphaned|sealed.*registry|incomplete/u);
+  }
+  await assert.rejects(opened.renderHost(host, f.runtime), /orphaned|sealed.*registry|incomplete/u);
+  assert.deepEqual(readFileSync(sealed), originalSealed, 'unresolved sealed bytes remain intact');
+  assert.equal(existsSync(registry), false, 'rendering never fabricates missing source claims');
+  // A genuinely empty, fully admitted store is still a valid rendering input.
+  rmSync(sealed);
+  const healthy = runUnit(f.store, join(f.root, 'verified-empty-source'));
+  assert.equal(healthy.status, 0, healthy.stderr);
+  assert.deepEqual(JSON.parse(healthy.stdout).services, []);
+});
