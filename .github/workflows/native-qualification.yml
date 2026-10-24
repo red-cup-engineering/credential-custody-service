@@ -443,6 +443,52 @@ jobs:
           assert.equal(readFileSync(join(runtime, 'keys/second.pem'), 'utf8'), 'INERT_INSTALLED_SECOND');
           NODE
 
+          # The freshly installed request reader/writer must not silently
+          # erase earlier service needs or claim a successful append into an
+          # incomplete log; external links cannot become source or destination.
+          node --input-type=module - "$consumer/installed-request-integrity" "$installed/credentials" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { spawnSync } from 'node:child_process';
+          import { openStore } from '@red-cup-engineering/credential-custody-service/store';
+          const [root, executable] = process.argv.slice(2);
+          mkdirSync(root, { recursive: true });
+          const path = join(root, 'store'), ledger = join(path, 'requests.jsonl'), store = openStore(path);
+          const invoke = (...args) => spawnSync(executable, ['--store', path, ...args], { encoding: 'utf8' });
+          assert.deepEqual(store.requests(), [], 'genuinely missing ledger remains an empty view');
+          store.request('prior.need', { reason: 'INERT_FIRST_NEED', by: 'fixture-host' });
+          const healthy = readFileSync(ledger);
+          assert.deepEqual(JSON.parse(invoke('requests', '--all').stdout).map(r => r.id), ['prior.need']);
+          appendFileSync(ledger, '{incomplete-line\n');
+          const corrupted = readFileSync(ledger);
+          assert.throws(() => store.requests(), /credential requests.*line 2.*invalid JSON/u);
+          assert.throws(() => store.request('later.need', { reason: 'INERT_UNRECEIVED', by: 'fixture-host' }),
+            /credential requests.*line 2.*invalid JSON/u);
+          for (const args of [['requests', '--all'], ['audit'],
+            ['request', 'later.need', '--reason', 'INERT_UNRECEIVED', '--by', 'fixture-host']]) {
+            const result = invoke(...args);
+            assert.notEqual(result.status, 0);
+            assert.equal(result.stdout, '', 'incomplete custody cannot produce a success response');
+            assert.equal(result.stderr.includes('INERT_UNRECEIVED'), false);
+          }
+          assert.deepEqual(readFileSync(ledger), corrupted, 'invalid log is not overwritten or extended');
+          writeFileSync(ledger, healthy);
+          assert.deepEqual(store.requests().map(r => r.id), ['prior.need']);
+          const external = join(root, 'unrelated');
+          writeFileSync(external, 'INERT_EXTERNAL_SENTINEL\n');
+          rmSync(ledger);
+          symlinkSync(external, ledger);
+          assert.throws(() => store.requests(), /credential requests.*unavailable/u);
+          assert.throws(() => store.request('new.need', { reason: 'INERT', by: 'fixture-host' }),
+            /credential requests.*unavailable/u);
+          assert.equal(readFileSync(external, 'utf8'), 'INERT_EXTERNAL_SENTINEL\n');
+          rmSync(ledger);
+          writeFileSync(ledger, healthy);
+          assert.equal(invoke('request', 'new.need', '--reason', 'INERT', '--by', 'fixture-host').status, 0);
+          assert.deepEqual(store.requests().map(r => r.id), ['prior.need', 'new.need']);
+          NODE
+
           # Installed-consumer regression: a file delivery cannot launder a
           # forged environment variable into a previously healthy generation.
           # The record and sealed value are real; only the consumer metadata
