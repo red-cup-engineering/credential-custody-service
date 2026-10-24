@@ -175,7 +175,18 @@ export function openStore(dir, { create = true } = {}) {
     async render(host, service) {
       await assertRenderableStore(dir, host);
       const lines = [];
-      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable && !c.file && !c.path) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
+      for (const rec of records()) for (const c of rec.consumers ?? []) {
+        if (c.host !== host || c.service !== service || !c.variable || c.file || c.path) continue;
+        const value = await this.get(rec.id, host);
+        // These bytes are written unquoted into a systemd EnvironmentFile.
+        // Newlines could turn one sealed value into a second environment
+        // assignment; NUL is not representable. Fail before touching outputs.
+        // Multiline secrets remain supported by file consumers.
+        if (typeof value !== 'string' || /[\r\n\u0000]/u.test(value)) {
+          throw new TypeError(`environment credential ${rec.id} must have a single-line value; deliver multiline values as files`);
+        }
+        lines.push(`${c.variable}=${value}`);
+      }
       return lines.sort().join('\n') + (lines.length ? '\n' : '');
     },
 
