@@ -137,3 +137,40 @@ jobs:
           cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
           cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
           grep -Fq -- "$consumer/missing-original" "$consumer/stderr"
+
+          # The installed-consumer check above qualified THIS pack. Preserve
+          # those exact bytes for independent release receiving, not a rebuild.
+          qualified="$RUNNER_TEMP/credential-custody-qualified"
+          mkdir -p "$qualified"
+          cp -- "${a[0]}" "$qualified/credential-custody.tgz"
+          (cd "$qualified" && sha256sum credential-custody.tgz > SHA256SUMS)
+          node --input-type=module - "$qualified" <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const qualified = process.argv[2];
+          const source = process.env.GITHUB_WORKSPACE;
+          const git = (...args) => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' }).trim();
+          const sha256 = readFileSync(join(qualified, 'SHA256SUMS'), 'utf8').split(/\\s+/u)[0];
+          const metadata = {
+            kind: 'credential-custody-tested-release-candidate',
+            version: 1,
+            sourceRepository: process.env.GITHUB_REPOSITORY,
+            testedCommit: git('rev-parse', 'HEAD'),
+            testedTree: git('rev-parse', 'HEAD^{tree}'),
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            package: '@red-cup-engineering/credential-custody-service',
+            packageVersion: JSON.parse(readFileSync(join(source, 'package.json'), 'utf8')).version,
+            artifact: 'credential-custody.tgz',
+            artifactSha256: sha256,
+            qualification: 'native Node tests, deterministic twin pack, private-path guard, real installed healthy render then fail-closed preservation'
+          };
+          writeFileSync(join(qualified, 'qualification.json'), JSON.stringify(metadata, null, 2) + '\\n');
+          NODE
+      - name: Retain exact consumer-tested archive for source-owned independent release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4, pinned
+        with:
+          name: credential-custody-qualified-${{ github.sha }}
+          path: ${{ runner.temp }}/credential-custody-qualified/
+          if-no-files-found: error
+          retention-days: 7
