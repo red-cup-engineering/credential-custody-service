@@ -326,6 +326,35 @@ jobs:
           cp "$consumer/expected-registry" "$valid/registry/fixture.token.json"
 
 
+          # Held-out installed-package check: a corrupt registry host claim is
+          # not authorization to withdraw the previous live credential file.
+          # Exercise both consumer and holder provenance using the packed CLI.
+          for bad_host_role in consumer holder; do
+            node --input-type=module - "$valid/registry/fixture.token.json" "$bad_host_role" <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const [path, role] = process.argv.slice(2);
+          const record = JSON.parse(readFileSync(path, 'utf8'));
+          if (role === 'consumer') {
+            record.consumers = record.consumers.map(consumer => ({ ...consumer, host: '../other-host' }));
+          } else {
+            record.holders = ['../other-host'];
+            record.consumers = [];
+          }
+          writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+          NODE
+            if CREDENTIALS_STORE="$valid" CREDENTIALS_HOST=fixture-host CREDENTIALS_RENDER_TO="$live" \
+              "$installed/credentials-render-host" > "$consumer/bad-host-stdout" 2> "$consumer/bad-host-stderr"; then
+              echo "Installed renderer accepted a malformed $bad_host_role host claim" >&2
+              exit 1
+            fi
+            [[ ! -s "$consumer/bad-host-stdout" ]]
+            grep -Eq 'registry/fixture[.]token[.]json.*(holders|consumers)' "$consumer/bad-host-stderr"
+            ! grep -Fq -- 'INERT_FIXTURE_VALUE' "$consumer/bad-host-stderr"
+            cmp -- "$live/fixture-service.env" "$consumer/expected-kept"
+            cmp -- "$live/.credential-custody-render.json" "$consumer/expected-manifest"
+            cp -- "$consumer/expected-registry" "$valid/registry/fixture.token.json"
+          done
+
           # Installed-consumer security: a sealed multiline env value may
           # contain another EnvironmentFile assignment. It must fail before
           # replacing any prior managed output; file-bound multiline secrets
