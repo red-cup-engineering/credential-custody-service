@@ -4,13 +4,13 @@ import { mkdtempSync, readFileSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { openStore } from '../src/store.mjs';
+import { createStore, openStore } from '../src/store.mjs';
 
 // Ephemeral identities and inert values exist only in these temporary fixtures.
 async function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'credential-describe-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const dir = join(root, 'store'), store = openStore(dir);
+  const dir = join(root, 'store'), store = createStore(dir);
   await store.initHost('holder-host');
   await store.put('fixture-value', 'INERT_VALUE', { holders: ['holder-host'], consumers: [{ host: 'holder-host', service: 'fixture-service', variable: 'API_KEY_FIXTURE' }], rotateEveryDays: 30 });
   await store.put('fixture-other', 'OTHER_INERT_VALUE', { holders: ['holder-host'] });

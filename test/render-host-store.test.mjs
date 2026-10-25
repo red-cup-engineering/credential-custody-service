@@ -4,13 +4,13 @@ import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { openStore } from '../src/store.mjs';
+import { createStore, openStore } from '../src/store.mjs';
 
 test('genuine age custody reaches both original entrypoints and file bindings without returning values', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-store-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   // Ephemeral identities exist only in this temporary fixture, never a real host or account.
   await store.initHost(host);
   await store.put('fixture-value', 'INERT_VALUE', { holders: [host], consumers: [{ host, service: 'fixture-service', variable: 'TEST_VALUE' }] });
@@ -39,7 +39,7 @@ test('bind gives a held credential another service without reading it, as a vari
   const root = mkdtempSync(join(tmpdir(), 'credential-bind-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   await store.put('fixture-id', 'INERT_ID', { holders: [host], consumers: [{ host, service: 'first-service', variable: 'FIXTURE_ID' }] });
   await store.put('fixture-key', 'INERT_KEY_FILE', { holders: [host], consumers: [{ host, service: 'first-service', path: 'keys/fixture/key.pem', variable: 'FIXTURE_KEY_PATH' }] });
