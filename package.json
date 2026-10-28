@@ -7,14 +7,16 @@
     "./store": "./src/store.mjs",
     "./package.json": "./package.json",
     "./recipient-seal": "./src/recipient-seal.mjs",
-    "./keep": "./src/keep.mjs"
+    "./keep": "./src/keep.mjs",
+    "./local-intake": "./src/local-intake.mjs"
   },
   "bin": {
     "credentials": "./scripts/credentials.mjs",
     "credentials-render-host": "./scripts/render-host.mjs"
   },
   "dependencies": {
-    "age-encryption": "0.3.1"
+    "age-encryption": "0.3.1",
+    "@red-cup-engineering/http-services-section": "0.6.4"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
