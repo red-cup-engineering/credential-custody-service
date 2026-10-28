@@ -14,11 +14,12 @@
  * evidence or authority; custody controls its storage and use. This store is custody; it does not authenticate
  * or authorize anything.
  */
-import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { generateIdentity, openWith, recipientOf, sealTo } from './recipient-seal.mjs';
-import { placedPath, renderHost as renderHostCredentials } from './render-host.mjs';
+import { placedPath, serviceName, environmentAssignment, renderHost as renderHostCredentials } from './render-host.mjs';
+import { assertRenderableStore, assertCredentialHost } from './render-source-admission.mjs';
 
 export const KINDS = Object.freeze(['api-key', 'oauth-client-secret', 'oauth-refresh-token', 'token', 'password', 'passphrase', 'private-key', 'session-secret', 'other']);
 const ID = /^[a-z0-9][a-z0-9.-]{0,95}$/u;
@@ -31,7 +32,25 @@ const DESCRIPTION_LIMIT = 200;
 export const fingerprint = (value) => createHash('sha256').update(value).digest('hex').slice(0, 16);
 
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return fallback; throw error; } };
-const writeAtomic = (path, text, mode = 0o644) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(`${path}.tmp`, text, { mode }); chmodSync(`${path}.tmp`, mode); renameSync(`${path}.tmp`, path); };
+// Never reuse a predictable staging pathname: a stale .tmp symlink could
+// overwrite a file outside credential custody before the atomic rename.
+// Exclusive, unique staging also prevents overlapping writers from sharing
+// an intermediate file (it does not by itself serialize registry updates).
+const writeAtomic = (path, text, mode = 0o644, { exclusive = false } = {}) => {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, text, { mode, flag: 'wx' });
+    chmodSync(temporary, mode);
+    // New credential IDs must not replace orphaned sealed evidence: publish
+    // through an exclusive hard link, which also rejects dangling symlinks.
+    // Existing IDs may atomically replace their recorded ciphertext.
+    if (exclusive) linkSync(temporary, path);
+    else renameSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+};
 
 /**
  * Create a credential store at `dir` (its registry, sealed and hosts directories and the .gitignore that keeps host
@@ -53,11 +72,26 @@ export function openStore(dir) {
   if (!dir) throw new TypeError('a credential store directory is required (a services section data/credentials/)');
   let registry;
   try { registry = statSync(join(dir, 'registry')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (!registry?.isDirectory()) throw new Error(`no credential store at ${dir}: it holds no registry/ (create one with: credentials init-store)`);
+  if (!registry?.isDirectory()) throw new Error(`no credential store at ${dir}: registry/ unavailable (missing or not a directory; create one with: credentials init-store)`);
   const recipientsPath = join(dir, 'recipients.json');
   const recipients = () => readJson(recipientsPath, { hosts: {}, recovery: [] });
+  // A partial recipients registry is evidence of interrupted custody, not
+  // an empty enrollment ledger. Admit its shape *before* minting any identity
+  // so failed enrollment cannot leave a new unregistered private key behind.
+  // The older hosts-only document remains readable (recovery is optional).
+  const enrollmentRecipients = () => {
+    const value = recipients();
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || !value.hosts || typeof value.hosts !== 'object' || Array.isArray(value.hosts)
+        || (value.recovery !== undefined
+          && (!Array.isArray(value.recovery)
+            || value.recovery.some(key => typeof key !== 'string' || !/^age1[0-9a-z]+$/u.test(key))))) {
+      throw new TypeError(`recipients custody registry ${recipientsPath} has an invalid shape; reconcile original registration`);
+    }
+    return value;
+  };
   const recordPath = (id) => { if (!ID.test(id)) throw new TypeError(`credential id ${id} must be lowercase letters, digits, dots and dashes`); return join(dir, 'registry', `${id}.json`); };
-  const identityPath = (host) => join(dir, 'hosts', `${host}.identity`);
+  const identityPath = (host) => join(dir, 'hosts', `${assertCredentialHost(host)}.identity`);
 
   function identity(host) {
     const path = identityPath(host);
@@ -65,11 +99,220 @@ export function openStore(dir) {
     if ((statSync(path).mode & 0o077) !== 0) throw new Error(`${path} is readable by others; chmod 600 it`);
     return readFileSync(path, 'utf8').trim();
   }
-  const record = (id) => readJson(recordPath(id), null);
-  const records = () => readdirSync(join(dir, 'registry')).filter((f) => f.endsWith('.json')).map((f) => readJson(join(dir, 'registry', f), null)).filter(Boolean);
+  // Validate every source-declared host with the same admission rules as
+  // private identities. Invalid host claims otherwise look like a valid but
+  // unrelated consumer roster and can authorize pruning healthy outputs.
+  const validSourceHost = value => {
+    try { assertCredentialHost(value); return true; } catch { return false; }
+  };
+  // A listed record is part of the source's custody evidence. Missing or
+  // malformed holder/consumer arrays cannot silently mean "no consumers":
+  // doing so authorizes withdrawal of previously healthy runtime credentials.
+  const requireRecord = (path, id, value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || value.id !== id) {
+      throw new TypeError(`credential registry entry ${path} id mismatch or invalid record`);
+    }
+    if (!Array.isArray(value.holders) || value.holders.length === 0 || value.holders.some((holder) => !validSourceHost(holder))) {
+      throw new TypeError(`credential registry entry ${path} holders must be a list of hosts`);
+    }
+    // A host label alone does not declare any renderable delivery. Earlier
+    // versions silently interpreted such partial records as an empty service
+    // roster, withdrawing credentials from an otherwise healthy generation.
+    // An explicit placed/file consumer may omit a service variable; an env
+    // consumer must supply both a service and a valid assignment name.
+    const delivers = (consumer) => {
+      if (!consumer || typeof consumer !== 'object' || Array.isArray(consumer)
+        || !validSourceHost(consumer.host)) return false;
+      // A file consumer must not bypass the variable/service checks: the
+      // renderer writes file bindings into env files, so a newline, assignment,
+      // missing service, or unsafe service name is a source-integrity failure.
+      for (const key of ['file', 'path']) {
+        if (Object.hasOwn(consumer, key) && (typeof consumer[key] !== 'string' || !consumer[key].trim())) return false;
+      }
+      if (Object.hasOwn(consumer, 'path')) {
+        try { placedPath(consumer.path); } catch { return false; }
+      }
+      const file = Object.hasOwn(consumer, 'file') || Object.hasOwn(consumer, 'path');
+      const variable = Object.hasOwn(consumer, 'variable');
+      if (Object.hasOwn(consumer, 'service') || variable) {
+        try { serviceName(consumer.service); } catch { return false; }
+      }
+      if (variable && (typeof consumer.variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(consumer.variable))) return false;
+      return file || variable;
+    };
+    if (!Array.isArray(value.consumers) || value.consumers.some((consumer) => !delivers(consumer))) {
+      throw new TypeError(`credential registry entry ${path} consumers must declare actual host-bound file or service-variable delivery`);
+    }
+    return value;
+  };
+  // Registry claims are custody records, not arbitrary filesystem pointers.
+  // Open the entry itself, refusing even a RESOLVED symlink; otherwise a
+  // borrowed but well-formed zero-consumer record can retire healthy outputs.
+  // Nonblocking open also prevents a forged FIFO from hanging the renderer.
+  const readRegistryJson = (path, { optional = false } = {}) => {
+    let fd;
+    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) {
+      if (optional && error.code === 'ENOENT') return undefined;
+      throw new Error(`credential registry source ${path} unavailable (${error.code ?? 'cannot open'})`, { cause: error });
+    }
+    try {
+      if (!fstatSync(fd).isFile()) throw new Error(`credential registry source ${path} unavailable (not a regular file)`);
+      try { return JSON.parse(readFileSync(fd, 'utf8')); }
+      catch (error) { throw new Error(`credential registry source ${path} contains invalid JSON`, { cause: error }); }
+    } finally { closeSync(fd); }
+  };
+  const record = (id) => {
+    const path = recordPath(id), value = readRegistryJson(path, { optional: true });
+    return value === undefined ? null : requireRecord(path, id, value);
+  };
+  // A direct get() is a source-reading boundary of its own: checking a registry
+  // grant must not let a symlink substitute another encrypted value, including
+  // ciphertext sealed to the same host. Open the source itself without following
+  // links, and keep that descriptor through the read (even if a concurrent rename
+  // changes the path). O_NONBLOCK refuses special files without hanging the caller.
+  const readSealed = (id) => {
+    const path = join(dir, 'sealed', `${id}.age`);
+    let fd;
+    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) {
+      throw new Error(`sealed credential source ${path} unavailable (${error.code ?? 'cannot open'})`, { cause: error });
+    }
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.size === 0 || !(info.mode & 0o444)) {
+        throw new Error(`sealed credential source ${path} unavailable (not a readable nonempty regular file)`);
+      }
+      return readFileSync(fd, 'utf8');
+    } finally { closeSync(fd); }
+  };
+  // Once a registry entry has been enumerated it must be read successfully:
+  // a vanished or malformed entry must never be mistaken for empty custody.
+  const records = () => {
+    const registryNames = readdirSync(join(dir, 'registry')).filter((f) => f.endsWith('.json'));
+    // A sealed value left by interrupted registry maintenance is still custody
+    // evidence. A missing corresponding record cannot mean "zero credentials":
+    // that mistaken inference previously withdrew a healthy runtime generation.
+    // Inspect the actual sealed directory entries, including dangling links,
+    // before treating this store as complete or considering any pruning.
+    const declaredSeals = new Set(registryNames.map((f) => `${f.slice(0, -'.json'.length)}.age`));
+    for (const name of readdirSync(join(dir, 'sealed'))) {
+      if (name.endsWith('.age') && !declaredSeals.has(name)) {
+        const orphan = join(dir, 'sealed', name);
+        throw new Error(`credential sealed source ${orphan} has no registry entry; incomplete custody requires reconciliation`);
+      }
+    }
+    return registryNames.map((f) => {
+      const path = join(dir, 'registry', f), filenameId = f.slice(0, -'.json'.length);
+      const value = readRegistryJson(path);
+      if (!ID.test(filenameId)) throw new TypeError(`credential registry entry ${path} has invalid filename id`);
+      const admitted = requireRecord(path, filenameId, value);
+      // A declared record without its sealed payload is incomplete custody,
+      // not permission to retire previous host outputs. Check even records with
+      // no consumers or with holders other than the currently rendered host.
+      const sealedPath = join(dir, 'sealed', `${filenameId}.age`);
+      let sealed;
+      try { sealed = lstatSync(sealedPath); }
+      catch (error) {
+        throw new Error(`credential sealed source ${sealedPath} unavailable (${error.code ?? 'cannot inspect'})`, { cause: error });
+      }
+      if (!sealed.isFile() || sealed.size === 0 || !(sealed.mode & 0o444)) {
+        throw new Error(`credential sealed source ${sealedPath} unavailable (not a readable nonempty regular file)`);
+      }
+      return admitted;
+    });
+  };
+  // Refuse authoring a source that will later fail rendering. Compare the
+  // exact host/service/variable claims of the candidate against all other
+  // records, but allow a damaged record to be repaired by replacing its own
+  // bindings. The original renderer still independently rejects external
+  // registry edits and races at receiving time.
+  // A render root belongs to a single host. Distinct credentials may not
+  // claim the same placed output, nor make a file another output's parent.
+  // This producer preflight complements the renderer's independent receiving
+  // checks; it cannot grant or alter any host's credential access.
+  const assertConsumerClaims = (sourceRecords) => {
+    const environment = new Set(), outputs = [];
+    for (const rec of sourceRecords) for (const consumer of rec.consumers ?? []) {
+      if (consumer.variable) {
+        const key = JSON.stringify([consumer.host, consumer.service, consumer.variable]);
+        if (environment.has(key)) throw new Error('duplicate environment binding ' + consumer.variable
+          + ' for service ' + consumer.service + ' on host ' + consumer.host);
+        environment.add(key);
+      }
+      if (!consumer.file && !consumer.path) continue;
+      const output = consumer.path ?? `files/${rec.id}`;
+      for (const previous of outputs) {
+        if (previous.host !== consumer.host) continue;
+        const same = previous.output === output;
+        if ((same && previous.id !== rec.id)
+            || (!same && (previous.output.startsWith(output + '/')
+              || output.startsWith(previous.output + '/')))) {
+          throw new Error('conflicting file placement ' + output + ' for credential ' + rec.id
+            + ' on host ' + consumer.host);
+        }
+      }
+      outputs.push({ host: consumer.host, id: rec.id, output });
+    }
+  };
+  const assertNoEnvironmentCollisions = (id, candidate) => {
+    // A metadata-only rotation with no render claims cannot introduce a
+    // collision; do not demote an unrelated orphan into a global writer veto.
+    // Render receiving independently refuses incomplete custody.
+    if (!(candidate.consumers ?? []).some(c => c.variable || c.file || c.path)) return;
+    assertConsumerClaims([...records().filter(existing => existing.id !== id), candidate]);
+  };
   const sealFor = (holders) => {
     const r = recipients(), keys = [...holders.map((h) => { if (!r.hosts[h]) throw new Error(`host ${h} has no recipient in recipients.json`); return r.hosts[h]; }), ...r.recovery];
     return [...new Set(keys)];
+  };
+
+  // Request records are source-owned Work cues. A partial/corrupt log must
+  // never become an apparently healthy empty queue. Open the exact ledger
+  // without following external symlinks or blocking on special files.
+  const requestsPath = join(dir, 'requests.jsonl');
+  const openRequests = (flags, { absentOkay = false } = {}) => {
+    let fd;
+    try { fd = openSync(requestsPath, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644); }
+    catch (error) {
+      if (absentOkay && error.code === 'ENOENT') return undefined;
+      throw new Error(`credential requests source ${requestsPath} unavailable (${error.code ?? 'cannot open'})`, { cause: error });
+    }
+    try {
+      if (!fstatSync(fd).isFile()) throw new Error(`credential requests source ${requestsPath} unavailable (not a regular file)`);
+    } catch (error) { closeSync(fd); throw error; }
+    return fd;
+  };
+  const readRequests = () => {
+    const fd = openRequests(constants.O_RDONLY, { absentOkay: true });
+    if (fd === undefined) return [];
+    let contents;
+    try { contents = readFileSync(fd, 'utf8'); }
+    catch (error) { throw new Error(`credential requests source ${requestsPath} unavailable (cannot read)`, { cause: error }); }
+    finally { closeSync(fd); }
+    // Our append producer terminates each JSONL record. A parseable but
+    // unterminated tail is not a complete receipt: O_APPEND would concatenate
+    // the next request into that same row and then falsely acknowledge Work.
+    // Refuse the existing source unchanged; reconciliation owns its recovery.
+    if (contents.length && !contents.endsWith('\n')) {
+      throw new Error(`credential requests source ${requestsPath} has an unterminated final line; reconcile incomplete custody before appending`);
+    }
+    const rows = [];
+    for (const [index, line] of contents.split('\n').entries()) {
+      if (!line.trim()) continue;
+      let row;
+      try { row = JSON.parse(line); }
+      catch (error) { throw new Error(`credential requests source ${requestsPath} line ${index + 1} contains invalid JSON`, { cause: error }); }
+      if (!row || typeof row !== 'object' || Array.isArray(row)
+          || typeof row.id !== 'string' || !row.id.trim()
+          || !['requested', 'deferred'].includes(row.state)
+          || (row.state === 'deferred' && (typeof row.blockedBy !== 'string' || !row.blockedBy.trim()))
+          || (row.state === 'requested' && Object.hasOwn(row, 'blockedBy'))) {
+        throw new Error(`credential requests source ${requestsPath} line ${index + 1} contains invalid record (id/state)`);
+      }
+      rows.push(row);
+    }
+    return rows;
   };
 
   return {
@@ -77,11 +320,41 @@ export function openStore(dir) {
 
     /** Create this host's identity (once) and record its public recipient. */
     async initHost(host, { recovery = false } = {}) {
+      // identityPath already validates via the shared admission contract.
       const path = identityPath(host);
-      if (existsSync(path)) return { host, recipient: recipientOf(identity(host)), created: false };
+      const prior = enrollmentRecipients();
+      // existsSync follows symlinks and reports a dangling identity link as
+      // missing. That link may be evidence of interrupted or externally mounted
+      // private custody; never silently replace it with a fresh identity.
+      let priorIdentity;
+      try { priorIdentity = lstatSync(path); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (priorIdentity) {
+        if (!priorIdentity.isFile() && !priorIdentity.isSymbolicLink()) {
+          throw new Error(`host ${host} identity custody at ${path} is not a file; reconcile explicitly`);
+        }
+        const recipient = await recipientOf(identity(host));
+        const acknowledged = recovery ? prior.recovery?.includes(recipient) : prior.hosts?.[host] === recipient;
+        if (!acknowledged) throw new Error(`host ${host} identity/recipient custody mismatch; repair registration explicitly`);
+        return { host, recipient, created: false };
+      }
+      if (Object.hasOwn(prior.hosts ?? {}, host)) {
+        throw new Error(`host ${host} has a recipient but no local identity; repair custody explicitly`);
+      }
       const id = await generateIdentity(), recipient = await recipientOf(id);
-      writeAtomic(path, `${id}\n`, 0o600);
-      const r = recipients();
+      // Recheck after asynchronous generation and before publishing private
+      // custody: another writer or a malformed registration may have appeared.
+      const r = enrollmentRecipients();
+      if (Object.hasOwn(r.hosts, host)) {
+        throw new Error(`host ${host} has a recipient but no local identity; repair custody explicitly`);
+      }
+      // A concurrent writer can create the name after lstat. Publish only
+      // into an unoccupied name, without replacing any prior custody evidence.
+      try { writeAtomic(path, `${id}\n`, 0o600, { exclusive: true }); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw new Error(`host ${host} identity custody at ${path} already exists; reconcile explicitly`, { cause: error });
+        throw error;
+      }
       if (recovery) r.recovery = [...new Set([...(r.recovery ?? []), recipient])]; else r.hosts[host] = recipient;
       writeAtomic(recipientsPath, `${JSON.stringify(r, null, 2)}\n`);
       return { host, recipient, created: true, recovery };
@@ -89,12 +362,38 @@ export function openStore(dir) {
 
     /** Register (or update) a credential and seal its value to its holders. */
     async put(id, value, fields = {}) {
-      const now = new Date().toISOString(), old = record(id) ?? {};
+      const now = new Date().toISOString(), prior = record(id), old = prior ?? {};
       const next = { id, provider: null, kind: 'other', owner: null, purpose: null, holders: [], consumers: [], rotateEveryDays: null, createdAt: now, ...old, ...fields, fingerprint: fingerprint(value), rotatedAt: old.fingerprint && old.fingerprint !== fingerprint(value) ? now : (old.rotatedAt ?? now) };
       if (!KINDS.includes(next.kind)) throw new TypeError(`kind ${next.kind} is not one of ${KINDS.join(', ')}`);
-      if (!next.holders.length) throw new TypeError(`credential ${id} needs at least one holder host`);
+      if (!Array.isArray(next.holders) || !next.holders.length) throw new TypeError(`credential ${id} needs at least one holder host`);
+      // A writer must never mint source records that the renderer then refuses.
+      // Admit the complete record BEFORE sealing/replacing a valid earlier value.
+      requireRecord(recordPath(id), id, next);
+      assertNoEnvironmentCollisions(id, next);
       const keys = sealFor(next.holders);
-      writeAtomic(join(dir, 'sealed', `${id}.age`), await sealTo(value, keys));
+      const sealedPath = join(dir, 'sealed', `${id}.age`);
+      // A registered ID is not proof that its sealed source still exists.
+      // In particular, replacing a resolved/dangling link or a lost/empty
+      // payload would hide interrupted custody and may turn an unrecoverable
+      // key into apparently healthy source. Require original regular, nonempty
+      // ciphertext before ordinary rotation; recovery is a separate decision.
+      if (prior !== null) {
+        let original;
+        try { original = lstatSync(sealedPath); }
+        catch (error) {
+          throw new Error(`sealed credential source ${sealedPath} unavailable; reconcile custody before rotation`, { cause: error });
+        }
+        if (!original.isFile() || !original.size || !(original.mode & 0o444)) {
+          throw new Error(`sealed credential source ${sealedPath} is not a readable nonempty regular file; reconcile custody before rotation`);
+        }
+      }
+      try { writeAtomic(sealedPath, await sealTo(value, keys), 0o644, { exclusive: prior === null }); }
+      catch (error) {
+        if (prior === null && error.code === 'EEXIST') {
+          throw new Error(`sealed credential destination ${sealedPath} already exists; reconcile orphaned custody before writing`, { cause: error });
+        }
+        throw error;
+      }
       // The public recipients this value is sealed to, so a holder can see when the holders changed under it.
       next.sealedTo = [...keys].sort();
       writeAtomic(recordPath(id), `${JSON.stringify(next, null, 2)}\n`);
@@ -106,7 +405,7 @@ export function openStore(dir) {
       const rec = record(id);
       if (!rec) throw new Error(`no credential ${id} in this store; ask for it with: credentials request ${id} --reason "…"`);
       if (!rec.holders.includes(host)) throw new Error(`host ${host} does not hold ${id} (holders: ${rec.holders.join(', ')})`);
-      return openWith(readFileSync(join(dir, 'sealed', `${id}.age`), 'utf8'), [identity(host)]);
+      return openWith(readSealed(id), [identity(host)]);
     },
 
     /**
@@ -136,8 +435,24 @@ export function openStore(dir) {
 
     /** The environment a service runs with on a host: each consumer variable bound to its credential's value. */
     async render(host, service) {
-      const lines = [];
-      for (const rec of records()) for (const c of rec.consumers ?? []) if (c.host === host && c.service === service && c.variable && !c.file && !c.path) lines.push(`${c.variable}=${await this.get(rec.id, host)}`);
+      await assertRenderableStore(dir, host);
+      const lines = [], variables = new Set();
+      for (const rec of records()) for (const c of rec.consumers ?? []) {
+        if (c.host !== host || c.service !== service || !c.variable || c.file || c.path) continue;
+        if (variables.has(c.variable)) {
+          throw new Error(`duplicate environment binding ${c.variable} for service ${service}`);
+        }
+        variables.add(c.variable);
+        const value = await this.get(rec.id, host);
+        // These bytes become systemd EnvironmentFile assignments; preserve the exact value.
+        // Newlines could inject another assignment; systemd control characters are
+        // not portable values. Fail before touching outputs.
+        // Multiline secrets remain supported by file consumers.
+        if (typeof value !== 'string' || /[\u0000-\u001f\u007f\uFEFF]/u.test(value)) {
+          throw new TypeError(`environment credential ${rec.id} must have a single-line value without control characters; deliver such values as files`);
+        }
+        lines.push(environmentAssignment(c.variable, value));
+      }
       return lines.sort().join('\n') + (lines.length ? '\n' : '');
     },
 
@@ -147,16 +462,25 @@ export function openStore(dir) {
      * its path relative to that root.
      */
     placeFiles(host, root) {
-      const base = `${root.replace(/\/+$/u, '')}/`, placed = [];
-      for (const rec of records()) {
+      const base = `${root.replace(/\/+$/u, '')}/`, placed = [], rewritten = [];
+      const proposed = records().map((rec) => {
         let changed = false;
         const consumers = (rec.consumers ?? []).map((c) => {
           if (c.host !== host || !c.file || c.path || !c.file.startsWith(base)) return c;
-          changed = true; placed.push({ id: rec.id, service: c.service, path: placedPath(c.file.slice(base.length)) });
-          return { ...c, path: c.file.slice(base.length) };
+          changed = true;
+          const path = placedPath(c.file.slice(base.length));
+          placed.push({ id: rec.id, service: c.service, path });
+          return { ...c, path };
         });
-        if (changed) writeAtomic(recordPath(rec.id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
-      }
+        if (!changed) return rec;
+        const next = { ...rec, consumers };
+        rewritten.push(next);
+        return next;
+      });
+      // Preflight the complete intended generation before rewriting any
+      // legacy registry source; a later conflict cannot leave half converted.
+      assertConsumerClaims(proposed);
+      for (const rec of rewritten) writeAtomic(recordPath(rec.id), `${JSON.stringify(rec, null, 2)}\n`);
       return placed;
     },
 
@@ -170,8 +494,11 @@ export function openStore(dir) {
       if (!rec) throw new Error(`no credential ${id}`);
       if (!(rec.holders ?? []).includes(host)) throw new Error(`${id} is not sealed to ${host}: add it as a holder and reseal before binding`);
       if (typeof service !== 'string' || !service || typeof variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(variable)) throw new TypeError('bind needs a service and an UPPER_CASE variable');
+      // A syntactically valid env variable cannot make an unsafe output filename safe.
+      serviceName(service);
       const consumer = { host, service, variable, ...(path === undefined ? {} : { path: placedPath(path) }) };
       const consumers = [...(rec.consumers ?? []).filter((c) => !(c.host === host && c.service === service && c.variable === variable)), consumer];
+      assertNoEnvironmentCollisions(id, { ...rec, consumers });
       writeAtomic(recordPath(id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
       return { id, ...consumer };
     },
@@ -180,9 +507,15 @@ export function openStore(dir) {
     bindFile(id, { host, service, variable }) {
       const rec = record(id);
       if (!rec) throw new Error(`no credential ${id}`);
+      // File-path binding is still a host-bound credential grant; refuse
+      // forged env assignment names and unheld hosts before changing custody.
+      if (!rec.holders.includes(host)) throw new Error(`${id} is not sealed to ${host}: add it as a holder and reseal before binding`);
+      if (typeof variable !== 'string' || !/^[A-Z][A-Z0-9_]*$/u.test(variable)) throw new TypeError('bindFile needs an UPPER_CASE variable');
+      serviceName(service);
       const consumers = rec.consumers ?? [], hit = consumers.find((c) => c.host === host && c.service === service && (c.file || c.path));
       if (!hit) throw new Error(`${id} has no file consumer ${service} on ${host}`);
       hit.variable = variable;
+      assertNoEnvironmentCollisions(id, { ...rec, consumers });
       writeAtomic(recordPath(id), `${JSON.stringify({ ...rec, consumers }, null, 2)}\n`);
       return { id, host, service, variable };
     },
@@ -193,6 +526,7 @@ export function openStore(dir) {
      * `files/<id>` per file credential. Re-run on a timer so rotations reach the services.
      */
     async renderHost(host, to) {
+      await assertRenderableStore(dir, host);
       return renderHostCredentials(this, host, to);
     },
 
@@ -239,9 +573,36 @@ export function openStore(dir) {
       const rec = record(from);
       if (!rec) throw new Error(`no credential ${from}`);
       if (record(to)) throw new Error(`credential ${to} already exists`);
-      writeAtomic(recordPath(to), `${JSON.stringify({ ...rec, id: to }, null, 2)}\n`);
-      renameSync(join(dir, 'sealed', `${from}.age`), join(dir, 'sealed', `${to}.age`));
+      const source = join(dir, 'sealed', `${from}.age`), destination = join(dir, 'sealed', `${to}.age`);
+      // A missing record is NOT evidence that the corresponding encrypted
+      // bytes are disposable. A partial move or recovery may have left an
+      // orphan payload. Never rename over it, even after an enrollment race.
+      // Hardlinking to an unoccupied name is atomic and fails with EEXIST
+      // for existing files *and* dangling symlinks. Keep the original pair
+      // intact until the new registry entry has been durably written.
+      let sourceInfo;
+      try { sourceInfo = lstatSync(source); }
+      catch (error) { throw new Error(`sealed credential source ${source} unavailable`, { cause: error }); }
+      if (!sourceInfo.isFile() || !sourceInfo.size) {
+        throw new Error(`sealed credential source ${source} is not a nonempty regular file`);
+      }
+      try { linkSync(source, destination); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw new Error(`sealed credential destination ${destination} already exists; reconcile custody before renaming`, { cause: error });
+        throw error;
+      }
+      try {
+        writeAtomic(recordPath(to), `${JSON.stringify({ ...rec, id: to }, null, 2)}\n`);
+      } catch (error) {
+        // No new registry entry was committed: release our newly created
+        // ciphertext link while retaining the entire original source.
+        unlinkSync(destination);
+        throw error;
+      }
+      // If either removal fails, the new credential remains decryptable;
+      // repair leftover old registry/seal evidence explicitly on retry.
       unlinkSync(recordPath(from));
+      unlinkSync(source);
       return { from, to };
     },
 
@@ -257,10 +618,17 @@ export function openStore(dir) {
         blockedBy = text;
       }
       const row = { at: new Date().toISOString(), id, reason, by, consumers, state: blockedBy === undefined ? 'requested' : 'deferred', ...(blockedBy === undefined ? {} : { blockedBy }) };
-      appendFileSync(join(dir, 'requests.jsonl'), `${JSON.stringify(row)}\n`);
+      // A successful append receipt would be false if preceding request
+      // records could not be read. Reuse the original source reader before
+      // acknowledging new Work; the exclusive no-follow writer rechecks the
+      // path against substitution at open time.
+      readRequests();
+      const fd = openRequests(constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND);
+      try { appendFileSync(fd, `${JSON.stringify(row)}\n`); }
+      finally { closeSync(fd); }
       return row;
     },
-    requests: () => { try { return readFileSync(join(dir, 'requests.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } },
+    requests: readRequests,
   };
 }
 
