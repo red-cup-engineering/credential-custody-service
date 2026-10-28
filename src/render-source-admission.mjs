@@ -21,7 +21,13 @@ export async function assertRenderableStore(dir, host) {
   const requireKind = (path, kind) => {
     let info;
     try { info = statSync(path); }
-    catch (error) { throw new Error(`${context} unavailable: ${path} (${error.code ?? 'unreadable'})`, { cause: error }); }
+    catch (error) {
+      // A missing original store is distinct from a damaged component of an existing one.
+      // Preserve the original source pathname and ENOENT, but make the responsible
+      // missing-store condition explicit for operators and existing read-only callers.
+      const absentStore = path === dir && error.code === 'ENOENT';
+      throw new Error(`${absentStore ? 'no credential store: ' : ''}${context} unavailable: ${path} (${error.code ?? 'unreadable'})`, { cause: error });
+    }
     if (kind === 'directory' ? !info.isDirectory() : !info.isFile()) {
       throw new Error(`${context} unavailable: ${path} is not a ${kind}`);
     }
