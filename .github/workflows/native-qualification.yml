@@ -54,6 +54,7 @@ jobs:
           installed="$consumer/node_modules/.bin"
           valid="$consumer/valid-original"
           live="$consumer/live"
+          "$installed/credentials" --store "$valid" init-store > "$consumer/valid-store-creation"
           "$installed/credentials" --store "$valid" --host fixture-host init-host > "$consumer/host-enrollment"
           "$installed/credentials" --store "$valid" --host fixture-host init-host > "$consumer/host-enrollment-repeat"
           node --input-type=module - "$consumer/host-enrollment" "$consumer/host-enrollment-repeat" <<'NODE'
@@ -72,6 +73,7 @@ jobs:
           mkdir -p "$staging"
           printf 'INERT_STAGING_GUARD' > "$consumer/staging-guard"
           ln -s "$consumer/staging-guard" "$staging/recipients.json.tmp"
+          "$installed/credentials" --store "$staging" init-store > "$consumer/staging-store-creation"
           "$installed/credentials" --store "$staging" --host staging-host init-host > "$consumer/staging-init"
           [[ "$(cat "$consumer/staging-guard")" == INERT_STAGING_GUARD ]]
           [[ -s "$staging/recipients.json" ]]
@@ -222,6 +224,7 @@ jobs:
           # An interrupted or contradictory enrollment is a refusal, never
           # another freshly minted identity or a false successful repeat.
           interrupted="$consumer/interrupted-enrollment"
+          "$installed/credentials" --store "$interrupted" init-store > "$consumer/interrupted-store-creation"
           mkdir -p "$interrupted/hosts"
           cp "$valid/hosts/fixture-host.identity" "$interrupted/hosts/fixture-host.identity"
           if "$installed/credentials" --store "$interrupted" --host fixture-host init-host > "$consumer/interrupted-stdout" 2> "$consumer/interrupted-stderr"; then
@@ -234,7 +237,7 @@ jobs:
           cmp -- "$interrupted/hosts/fixture-host.identity" "$valid/hosts/fixture-host.identity"
 
           orphaned="$consumer/orphaned-enrollment"
-          mkdir -p "$orphaned"
+          "$installed/credentials" --store "$orphaned" init-store > "$consumer/orphaned-store-creation"
           cp "$valid/recipients.json" "$orphaned/recipients.json"
           if "$installed/credentials" --store "$orphaned" --host fixture-host init-host > "$consumer/orphaned-stdout" 2> "$consumer/orphaned-stderr"; then
             echo "Installed enrollment rotated a missing private identity" >&2
@@ -249,7 +252,7 @@ jobs:
           # recipient registry BEFORE creating any private identity. A
           # half-registered private key can strand the host on the next run.
           malformed="$consumer/malformed-recipients"
-          mkdir -p "$malformed"
+          "$installed/credentials" --store "$malformed" init-store > "$consumer/malformed-store-creation"
           for bad_shape in null-hosts array-hosts string-recovery; do
             recovery_option=()
             if [[ "$bad_shape" == null-hosts ]]; then
@@ -402,10 +405,10 @@ jobs:
           import assert from 'node:assert/strict';
           import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
           import { join } from 'node:path';
-          import { openStore } from '@red-cup-engineering/credential-custody-service/store';
+          import { createStore } from '@red-cup-engineering/credential-custody-service/store';
           const root = process.argv[2], path = join(root, 'store'), runtime = join(root, 'runtime'), host = 'collision-host';
           mkdirSync(root, { recursive: true });
-          const store = openStore(path);
+          const store = createStore(path);
           await store.initHost(host);
           await store.put('first', 'INERT_INSTALLED_FIRST', {
             holders: [host], consumers: [{ host, service: 'first-service', variable: 'FIRST_FILE', path: 'keys/shared.pem' }],
@@ -451,10 +454,10 @@ jobs:
           import { appendFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
           import { join } from 'node:path';
           import { spawnSync } from 'node:child_process';
-          import { openStore } from '@red-cup-engineering/credential-custody-service/store';
+          import { createStore } from '@red-cup-engineering/credential-custody-service/store';
           const [root, executable] = process.argv.slice(2);
           mkdirSync(root, { recursive: true });
-          const path = join(root, 'store'), ledger = join(path, 'requests.jsonl'), store = openStore(path);
+          const path = join(root, 'store'), ledger = join(path, 'requests.jsonl'), store = createStore(path);
           const invoke = (...args) => spawnSync(executable, ['--store', path, ...args], { encoding: 'utf8' });
           assert.deepEqual(store.requests(), [], 'genuinely missing ledger remains an empty view');
           store.request('prior.need', { reason: 'INERT_FIRST_NEED', by: 'fixture-host' });

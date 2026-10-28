@@ -4,13 +4,13 @@ import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { openStore } from '../src/store.mjs';
+import { createStore } from '../src/store.mjs';
 
 test('genuine age custody reaches both original entrypoints and file bindings without returning values', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-store-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   // Ephemeral identities exist only in this temporary fixture, never a real host or account.
   await store.initHost(host);
   await store.put('fixture-value', 'INERT_VALUE', { holders: [host], consumers: [{ host, service: 'fixture-service', variable: 'TEST_VALUE' }] });
@@ -39,7 +39,7 @@ test('bind gives a held credential another service without reading it, as a vari
   const root = mkdtempSync(join(tmpdir(), 'credential-bind-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   await store.put('fixture-id', 'INERT_ID', { holders: [host], consumers: [{ host, service: 'first-service', variable: 'FIXTURE_ID' }] });
   await store.put('fixture-key', 'INERT_KEY_FILE', { holders: [host], consumers: [{ host, service: 'first-service', path: 'keys/fixture/key.pem', variable: 'FIXTURE_KEY_PATH' }] });
@@ -63,7 +63,7 @@ test('re-enrolling an existing host returns its original public recipient, not a
   const root = mkdtempSync(join(tmpdir(), 'credential-host-reenrollment-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, 'store'), selectedHost = 'fixture-host';
-  const opened = openStore(path);
+  const opened = createStore(path);
   const enrolled = await opened.initHost(selectedHost);
   const identityBefore = readFileSync(join(path, 'hosts', selectedHost + '.identity'));
   const recipientsBefore = readFileSync(join(path, 'recipients.json'));
@@ -85,7 +85,7 @@ test('host enrollment never overwrites a preexisting temporary symlink outside t
   const storePath = join(root, 'store'), sentinel = join(root, 'unrelated-sentinel');
   const pristine = 'INERT_UNRELATED_CONTENT_MUST_SURVIVE';
   writeFileSync(sentinel, pristine, { mode: 0o600 });
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   // A stale or malicious staging path must never be opened for writing:
   // recipients.json.tmp is not the final declared source document.
   symlinkSync(sentinel, join(storePath, 'recipients.json.tmp'));
@@ -101,7 +101,7 @@ test('sealed credential update never overwrites a preexisting temporary symlink 
   const storePath = join(root, 'store'), sentinel = join(root, 'unrelated-sentinel');
   const pristine = 'INERT_UNRELATED_CONTENT_MUST_SURVIVE';
   writeFileSync(sentinel, pristine, { mode: 0o600 });
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost('fixture-host');
   symlinkSync(sentinel, join(storePath, 'sealed', 'fixture.id.age.tmp'));
   await store.put('fixture.id', 'INERT_SEALED_VALUE', { holders: ['fixture-host'], consumers: [] });
@@ -117,7 +117,7 @@ test('single-service CLI render must not follow a stale temporary symlink into a
   const output = join(root, 'fixture-service.env');
   const pristine = 'INERT_UNRELATED_FILE_MUST_SURVIVE';
   writeFileSync(sentinel, pristine, { mode: 0o600 });
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   await store.put('fixture', 'INERT_ENV_SECRET', {
     holders: [host],
@@ -140,7 +140,7 @@ test('renaming custody refuses an existing orphaned sealed target without losing
   const root = mkdtempSync(join(tmpdir(), 'credential-rename-orphan-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   await store.put('source', 'INERT_LIVE_SECRET', {
     holders: [host],
@@ -174,7 +174,7 @@ test('put refuses orphaned sealed payloads and dangling links instead of overwri
   const root = mkdtempSync(join(tmpdir(), 'credential-put-orphan-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   const orphan = join(storePath, 'sealed', 'unclaimed.age');
   const preserved = 'INERT_ORPHAN_CIPHERTEXT_MUST_NOT_BE_OVERWRITTEN';
@@ -208,7 +208,7 @@ test('put refuses orphaned sealed payloads and dangling links instead of overwri
 test('host enrollment refuses traversal and invalid host labels before changing identity or recipients', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-host-label-refusal-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const path = join(root, 'store'), opened = openStore(path);
+  const path = join(root, 'store'), opened = createStore(path);
   const escaped = join(root, 'escaped.identity');
   writeFileSync(escaped, 'ORIGINAL_INERT_SENTINEL');
   for (const unsafeHost of ['../../escaped', '../escaped', 'invalid/name', 'invalid\\\\name', 'bad\\nname', 'bad\\rname', '', '..', 'bad host', 'UPPERCASE']) {
@@ -232,7 +232,7 @@ test('host enrollment preserves dangling identity links instead of reassigning u
   const root = mkdtempSync(join(tmpdir(), 'credential-host-dangling-identity-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   const identityPath = join(storePath, 'hosts', host + '.identity');
   const missingTarget = join(root, 'missing-earlier-private-identity');
   symlinkSync(missingTarget, identityPath);
@@ -263,7 +263,7 @@ test('host enrollment preserves dangling identity links instead of reassigning u
 test('host enrollment refuses interrupted or mismatched custody instead of silently granting new identity', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-host-custody-refusal-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const path = join(root, 'store'), selectedHost = 'fixture-host', opened = openStore(path);
+  const path = join(root, 'store'), selectedHost = 'fixture-host', opened = createStore(path);
   const created = await opened.initHost(selectedHost);
   const identityPath = join(path, 'hosts', selectedHost + '.identity');
   const recipientsPath = join(path, 'recipients.json');
@@ -296,7 +296,7 @@ test('host render refuses injected environment assignment bytes before changing 
   const root = mkdtempSync(join(tmpdir(), 'credential-env-injection-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   await store.put('fixture-env', 'INERT_BASE', {
     holders: [host], consumers: [{ host, service: 'fixture-service', variable: 'FIXTURE' }],
@@ -349,7 +349,7 @@ test('systemd EnvironmentFile preserves quoted, escaped and whitespace-bearing c
   const storePath = join(root, 'store');
   const runtime = join(root, 'runtime\\with spaces');
   const host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   const original = '  INERT\\route "quoted" $marker  ';
   await store.put('fixture-env', original, {
@@ -382,7 +382,7 @@ test('duplicate environment bindings must refuse without retiring a healthy gene
   const root = mkdtempSync(join(tmpdir(), 'credential-env-collision-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   await store.put('first', 'INERT_FIRST', {
     holders: [host], consumers: [{ host, service: 'fixture', variable: 'DUPLICATE' }],
@@ -442,7 +442,7 @@ test('credential producers reject colliding service-variable grants before sourc
   const root = mkdtempSync(join(tmpdir(), 'credential-producer-collision-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
-  const store = openStore(storePath);
+  const store = createStore(storePath);
   await store.initHost(host);
   await store.put('first', 'INERT_FIRST', {
     holders: [host], consumers: [{ host, service: 'fixture', variable: 'ALREADY_USED' }],
@@ -482,7 +482,7 @@ test('registered rotation preserves unresolved sealed entries rather than legiti
   const root = mkdtempSync(join(tmpdir(), 'credential-rotation-linked-seal-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), host = 'fixture-host';
-  const opened = openStore(storePath);
+  const opened = createStore(storePath);
   await opened.initHost(host);
   await opened.put('first', 'INERT_FIRST', { holders: [host], consumers: [] });
   await opened.put('other', 'INERT_OTHER', { holders: [host], consumers: [] });
@@ -528,7 +528,7 @@ test('direct credential reads reject substituted sealed source links without lea
   const root = mkdtempSync(join(tmpdir(), 'credential-direct-read-source-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const storePath = join(root, 'store'), runtime = join(root, 'runtime'), host = 'fixture-host';
-  const opened = openStore(storePath);
+  const opened = createStore(storePath);
   await opened.initHost(host);
   await opened.put('first', 'INERT_FIRST_CONFIDENTIAL', {
     holders: [host], consumers: [{ host, service: 'fixture', variable: 'FIXTURE_KEY' }],
@@ -583,7 +583,7 @@ test('host enrollment refuses malformed recipient registries before creating pri
   ];
   for (const [index, candidate] of malformed.entries()) {
     const storePath = join(root, 'bad-' + index);
-    const opened = openStore(storePath);
+    const opened = createStore(storePath);
     const recipientFile = join(storePath, 'recipients.json');
     const before = JSON.stringify(candidate.record, null, 2) + '\n';
     writeFileSync(recipientFile, before);
@@ -595,7 +595,7 @@ test('host enrollment refuses malformed recipient registries before creating pri
     assert.equal(readFileSync(recipientFile, 'utf8'), before,
       'invalid public registration evidence must not be rewritten or silently repaired');
   }
-  const healthy = openStore(join(root, 'healthy'));
+  const healthy = createStore(join(root, 'healthy'));
   const enrolled = await healthy.initHost(host, { recovery: true });
   assert.equal(enrolled.created, true, 'valid first recovery enrollment remains supported');
   assert.equal(healthy.recipients().recovery.includes(enrolled.recipient), true);
@@ -604,7 +604,7 @@ test('host enrollment refuses malformed recipient registries before creating pri
 test('new credential cannot claim another credential\'s installed placed output', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-placed-new-collision-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const selected = 'fixture-host', path = join(root, 'source'), store = openStore(path);
+  const selected = 'fixture-host', path = join(root, 'source'), store = createStore(path);
   await store.initHost(selected);
   await store.put('first', 'INERT_FIRST', {
     holders: [selected], consumers: [{ host: selected, service: 'first-service', variable: 'FIRST_FILE', path: 'keys/shared.pem' }],
@@ -623,7 +623,7 @@ test('new credential cannot claim another credential\'s installed placed output'
 test('rotation cannot replace healthy ciphertext when its new placed path collides', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-placed-rotate-collision-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const selected = 'fixture-host', path = join(root, 'source'), runtime = join(root, 'runtime'), store = openStore(path);
+  const selected = 'fixture-host', path = join(root, 'source'), runtime = join(root, 'runtime'), store = createStore(path);
   await store.initHost(selected);
   await store.put('first', 'INERT_FIRST', {
     holders: [selected], consumers: [{ host: selected, service: 'fixture', variable: 'FIRST_PATH', path: 'keys/first.pem' }],
@@ -656,7 +656,7 @@ test('rotation cannot replace healthy ciphertext when its new placed path collid
 test('binding refuses a file placed beneath an existing file and preserves its source', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-placed-nested-collision-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const selected = 'fixture-host', path = join(root, 'source'), store = openStore(path);
+  const selected = 'fixture-host', path = join(root, 'source'), store = createStore(path);
   await store.initHost(selected);
   await store.put('first', 'INERT_FIRST', {
     holders: [selected], consumers: [{ host: selected, service: 'fixture', variable: 'FIRST_PATH', path: 'keys/fixture.pem' }],
@@ -672,7 +672,7 @@ test('binding refuses a file placed beneath an existing file and preserves its s
 test('same credential multi-service placed output and other-host independent placements remain healthy', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-placed-shared-valid-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const path = join(root, 'source'), store = openStore(path);
+  const path = join(root, 'source'), store = createStore(path);
   await store.initHost('fixture-one');
   await store.initHost('fixture-two');
   await store.put('first', 'INERT_FIRST', {
@@ -693,7 +693,7 @@ test('same credential multi-service placed output and other-host independent pla
 test('bulk conversion of legacy file consumers refuses collisions before editing any record', async t => {
   const root = mkdtempSync(join(tmpdir(), 'credential-legacy-place-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const selected = 'fixture-host', path = join(root, 'source'), originals = join(root, 'legacy'), store = openStore(path);
+  const selected = 'fixture-host', path = join(root, 'source'), originals = join(root, 'legacy'), store = createStore(path);
   await store.initHost(selected);
   const firstFile = join(originals, 'keys', 'shared.pem');
   await store.put('first', 'INERT_FIRST', {

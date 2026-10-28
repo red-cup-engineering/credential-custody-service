@@ -52,13 +52,27 @@ const writeAtomic = (path, text, mode = 0o644, { exclusive = false } = {}) => {
   }
 };
 
-export function openStore(dir, { create = true } = {}) {
+/**
+ * Create a credential store at `dir` (its registry, sealed and hosts directories and the .gitignore that keeps host
+ * identities out of Git), then open it. Opening never creates: a store is made once, on purpose.
+ */
+export function createStore(dir) {
   if (!dir) throw new TypeError('a credential store directory is required (a services section data/credentials/)');
-  if (create) {
-    for (const sub of ['registry', 'sealed', 'hosts']) mkdirSync(join(dir, sub), { recursive: true });
-    const ignore = join(dir, '.gitignore');
-    if (!existsSync(ignore)) writeFileSync(ignore, 'hosts/\n*.tmp\n');
-  }
+  for (const sub of ['registry', 'sealed', 'hosts']) mkdirSync(join(dir, sub), { recursive: true });
+  const ignore = join(dir, '.gitignore');
+  if (!existsSync(ignore)) writeFileSync(ignore, 'hosts/\n*.tmp\n');
+  return openStore(dir);
+}
+
+/**
+ * Open the credential store at `dir`. Opening only reads: a path that holds no store (no registry/) is refused by
+ * name, never made into an empty store whose render then succeeds with nothing in it.
+ */
+export function openStore(dir) {
+  if (!dir) throw new TypeError('a credential store directory is required (a services section data/credentials/)');
+  let registry;
+  try { registry = statSync(join(dir, 'registry')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (!registry?.isDirectory()) throw new Error(`no credential store at ${dir}: registry/ unavailable (missing or not a directory; create one with: credentials init-store)`);
   const recipientsPath = join(dir, 'recipients.json');
   const recipients = () => readJson(recipientsPath, { hosts: {}, recovery: [] });
   // A partial recipients registry is evidence of interrupted custody, not

@@ -4,6 +4,7 @@
  *
  *   credentials --store <dir> --host <host> <command> …        (or CREDENTIALS_STORE, CREDENTIALS_HOST)
  *
+ *   init-store                      create registry, sealed, hosts (opening never creates)
  *   init-host [--recovery]           create this host's identity (or a recovery identity) and record its recipient
  *   list                             every credential: kind, provider, owner, holders, consumers, age
  *   get <id>                         print a credential's value (this host must hold it)
@@ -42,7 +43,7 @@ import { readFileSync, readdirSync, statSync, writeFileSync, chmodSync, renameSy
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { DESCRIPTIVE_FIELDS, fingerprint, isSecretName, openStore, parseEnv } from '../src/store.mjs';
+import { DESCRIPTIVE_FIELDS, createStore, fingerprint, isSecretName, openStore, parseEnv } from '../src/store.mjs';
 
 // A refusal is a sentence for the person or agent reading it, not a stack trace.
 process.on('uncaughtException', (error) => { process.stderr.write(`credentials: ${error.message}\n`); process.exit(1); });
@@ -56,7 +57,7 @@ const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? proc
 const fail = (message) => { process.stderr.write(`${message}\n`); process.exit(2); };
 if (!storeDir) fail('--store <services section data/credentials dir> (or CREDENTIALS_STORE) is required');
 // Rendering must not synthesize a missing store before verifying the host source.
-const store = openStore(storeDir, { create: command !== 'render' && command !== 'render-host' });
+const store = command === 'init-store' ? createStore(storeDir) : openStore(storeDir);
 const needHost = () => host ?? fail('--host <this host> (or CREDENTIALS_HOST) is required');
 const list = (s) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 const readStdin = () => readFileSync(0, 'utf8').replace(/\r?\n$/u, '');
@@ -64,7 +65,8 @@ const out = (value) => process.stdout.write(`${typeof value === 'string' ? value
 const days = (iso) => Math.floor((Date.now() - Date.parse(iso)) / 86400000);
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9.]+/gu, '-').replace(/^-|-$/gu, '');
 
-if (command === 'init-host') out(await store.initHost(o.recovery ? (arg ?? 'recovery') : needHost(), { recovery: o.recovery }));
+if (command === 'init-store') out({ store: storeDir, created: true });
+else if (command === 'init-host') out(await store.initHost(o.recovery ? (arg ?? 'recovery') : needHost(), { recovery: o.recovery }));
 else if (command === 'list') out(store.records().map((r) => ({ id: r.id, kind: r.kind, provider: r.provider, owner: r.owner, account: r.account ?? null, plan: r.plan ?? null, holders: r.holders, consumers: (r.consumers ?? []).map((c) => `${c.host}:${c.service}:${c.variable}`), ageDays: days(r.rotatedAt) })));
 else if (command === 'describe') out(store.describe(arg ?? fail('describe <id> [--provider p] [--owner o] [--purpose s] [--account a] [--plan p] [--clear field]'), Object.fromEntries(DESCRIPTIVE_FIELDS.map((f) => [f, o[f]])), o.clear ?? []));
 else if (command === 'get') process.stdout.write(await store.get(arg ?? fail('get <id>'), needHost()));
@@ -147,4 +149,4 @@ else if (command === 'put') {
 else if (command === 'reseal-changed') out(await store.resealChanged(needHost()));
 else if (command === 'requests') out(store.requests().filter((r) => (o.all ? true : o.deferred ? r.state === 'deferred' : r.state === 'requested')));
 else if (command === 'reseal') out({ resealed: await store.reseal(needHost()) });
-else fail('usage: credentials --store <dir> --host <host> init-host|list|describe|get|put|render|render-host|bind|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal|reseal-changed');
+else fail('usage: credentials --store <dir> --host <host> init-store|init-host|list|describe|get|put|render|render-host|bind|bind-file|import|import-file|place-files|rename|audit|request|requests|reseal|reseal-changed');

@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openStore } from '../src/store.mjs';
+import { createStore, openStore } from '../src/store.mjs';
 
 const host = 'fixture-host';
 const script = new URL('../scripts/render-host.mjs', import.meta.url).pathname;
@@ -58,16 +58,14 @@ test('both CLI rendering paths fail closed on absent source and do not fabricate
 
 test('direct store entrypoints do not demote missing source into a valid empty store', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store, { create: false });
-  await assert.rejects(opened.render(host, 'example-service'), /credential store.*unavailable/u);
-  await assert.rejects(opened.renderHost(host, f.runtime), /credential store.*unavailable/u);
+  assert.throws(() => openStore(f.store), /no credential store.*registry/u, 'read-only store opening refuses missing source before returning a renderer');
   assert.equal(existsSync(f.store), false);
   assert.equal(readFileSync(join(f.runtime, '.credential-custody-render.json'), 'utf8'), manifest);
 });
 
 test('missing sealed, registry, host identity and recipients never withdraw a previous render', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   const identityPath = join(f.store, 'hosts', host + '.identity');
   const identity = readFileSync(identityPath, 'utf8');
@@ -75,7 +73,7 @@ test('missing sealed, registry, host identity and recipients never withdraw a pr
   const recipients = readFileSync(recipientsPath, 'utf8');
   const cases = [
     { path: join(f.store, 'sealed'), dir: true, expected: /sealed.*ENOENT/u },
-    { path: join(f.store, 'registry'), dir: true, expected: /registry.*ENOENT/u },
+    { path: join(f.store, 'registry'), dir: true, expected: /registry.*(ENOENT|unavailable)/u },
     { path: identityPath, restore: identity, expected: /identity.*ENOENT/u },
     { path: recipientsPath, restore: recipients, expected: /recipients.*ENOENT/u },
   ];
@@ -113,7 +111,7 @@ test('missing sealed, registry, host identity and recipients never withdraw a pr
 
 test('an enumerated registry entry that vanished is a source refusal, never permission to withdraw output', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   // A dangling link has a directory entry but does not constitute source
   // custody. The reader rejects the link itself (ELOOP) rather than letting
@@ -130,7 +128,7 @@ test('an enumerated registry entry that vanished is a source refusal, never perm
 
 test('unreadable sealed source is not a valid empty store and must preserve earlier output', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   const sealed = join(f.store, 'sealed');
   chmodSync(sealed, 0o000);
@@ -147,7 +145,7 @@ test('unreadable sealed source is not a valid empty store and must preserve earl
 
 test('a registry filename/record-id mismatch cannot silently withdraw live credentials', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   // A partial rename or wrongly installed record can leave a valid JSON object
   // with an id from another filename. The old renderer accepted the empty
@@ -164,7 +162,7 @@ test('a registry filename/record-id mismatch cannot silently withdraw live crede
 
 test('a partial registry record must never be interpreted as permission to erase a healthy generation', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   const path = join(f.store, 'registry', 'partial.json');
   const invalid = [
@@ -196,7 +194,7 @@ test('a partial registry record must never be interpreted as permission to erase
 
 test('a consumer without any declared delivery cannot silently retire a prior service', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   const path = join(f.store, 'registry', 'damaged.json');
   const cases = [
@@ -217,7 +215,7 @@ test('a consumer without any declared delivery cannot silently retire a prior se
 
 test('malformed file-bound variables cannot masquerade as safe file-only deliveries', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   await opened.put('inert-file-credential', 'INERT_TEST_VALUE', { holders: [host], consumers: [] });
   const record = join(f.store, 'registry', 'inert-file-credential.json');
@@ -241,7 +239,7 @@ test('malformed file-bound variables cannot masquerade as safe file-only deliver
 
 test('put refuses corrupt source updates before replacing any sealed credential bytes', async t => {
   const f = fixture(t);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   await opened.put('safe', 'ORIGINAL_INERT_VALUE', { holders: [host], consumers: [{ host, service: 'fixture-service', variable: 'SAFE' }] });
   const record = join(f.store, 'registry', 'safe.json');
@@ -266,7 +264,7 @@ test('put refuses corrupt source updates before replacing any sealed credential 
 
 test('bind rejects unsafe service names before corrupting the original registry', async t => {
   const f = fixture(t);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   await opened.put('safe', 'INERT_VALUE', { holders: [host] });
   const record = join(f.store, 'registry', 'safe.json');
@@ -280,7 +278,7 @@ test('bind rejects unsafe service names before corrupting the original registry'
 
 test('bindFile refuses forged assignments and unheld host grants without source mutation', async t => {
   const f = fixture(t);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   await opened.put('file', 'INERT_FILE_VALUE', {
     holders: [host],
@@ -307,7 +305,7 @@ test('bindFile refuses forged assignments and unheld host grants without source 
 
 test('missing sealed payload for a complete zero-consumer record must not retire live output', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   await opened.put('registered-but-unsealed', 'INERT_FIXTURE_PAYLOAD', { holders: [host], consumers: [] });
   const sealed = join(f.store, 'sealed', 'registered-but-unsealed.age');
@@ -327,7 +325,7 @@ test('missing sealed payload for a complete zero-consumer record must not retire
 
 test('orphaned sealed custody without registry must not authorize withdrawal of previously rendered files', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   await opened.put('orphaned', 'INERT_ORPHANED_VALUE', {
     holders: [host],
@@ -354,7 +352,7 @@ test('orphaned sealed custody without registry must not authorize withdrawal of 
 
 test('invalid holder or consumer hosts never turn corrupted custody into an authorized empty render', async t => {
   const f = fixture(t), manifest = seedLiveOutput(f.runtime);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   await opened.put('host-claim', 'INERT_HOST_CLAIM', {
     holders: [host],
@@ -392,7 +390,7 @@ test('invalid holder or consumer hosts never turn corrupted custody into an auth
 
 test('resolved registry symlink cannot borrow a healthy-looking record to retire live credentials', async t => {
   const f = fixture(t);
-  const opened = openStore(f.store);
+  const opened = createStore(f.store);
   await opened.initHost(host);
   await opened.put('claimed', 'INERT_CLAIMED_VALUE', {
     holders: [host],

@@ -4,13 +4,13 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { openStore } from '../src/store.mjs';
+import { createStore, openStore } from '../src/store.mjs';
 
 // Ephemeral identities exist only in these temporary fixtures, never a real host or account.
 async function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'credential-reseal-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const dir = join(root, 'store'), store = openStore(dir);
+  const dir = join(root, 'store'), store = createStore(dir);
   await store.initHost('holder-host');
   await store.initHost('new-host');
   return { root, dir, store };

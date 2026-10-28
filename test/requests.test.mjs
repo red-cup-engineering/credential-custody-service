@@ -4,13 +4,13 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { openStore } from '../src/store.mjs';
+import { createStore } from '../src/store.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'credential-requests-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dir = join(root, 'store');
-  return { dir, store: openStore(dir) };
+  return { dir, store: createStore(dir) };
 }
 const cli = (dir, ...args) => spawnSync(process.execPath, [new URL('../scripts/credentials.mjs', import.meta.url).pathname, '--store', dir, ...args], { encoding: 'utf8' });
 const rows = (dir) => readFileSync(join(dir, 'requests.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
