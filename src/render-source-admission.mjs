@@ -13,7 +13,7 @@ export function assertCredentialHost(host) {
 }
 
 /** Refuse incomplete or misselected source custody before any runtime output or reseal. */
-export async function assertRenderableStore(dir, host) {
+export async function assertRenderableStore(dir, host, { identities = join(dir ?? '', 'hosts') } = {}) {
   if (typeof dir !== 'string' || !dir) throw new TypeError('credential store directory is required for rendering');
   try { assertCredentialHost(host); }
   catch { throw new TypeError(`invalid credential host for store ${JSON.stringify(dir)}`); }
@@ -43,8 +43,8 @@ export async function assertRenderableStore(dir, host) {
     }
     return info;
   };
-  for (const path of [dir, join(dir, 'registry'), join(dir, 'sealed'), join(dir, 'hosts')]) requireKind(path, 'directory');
-  const identityFile = join(dir, 'hosts', `${host}.identity`);
+  for (const path of [dir, join(dir, 'registry'), join(dir, 'sealed'), identities]) requireKind(path, 'directory');
+  const identityFile = join(identities, `${host}.identity`);
   const identityInfo = requireKind(identityFile, 'file');
   if (identityInfo.mode & 0o077) throw new Error(`${context} unavailable: ${identityFile} is readable by others`);
   let identity;

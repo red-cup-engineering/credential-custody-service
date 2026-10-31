@@ -49,6 +49,7 @@ import { DESCRIPTIVE_FIELDS, createStore, fingerprint, isSecretName, openStore, 
 process.on('uncaughtException', (error) => { process.stderr.write(`credentials: ${error.message}\n`); process.exit(1); });
 
 const { values: o, positionals: [command, arg, arg2] } = parseArgs({ allowPositionals: true, options: {
+  identities: { type: 'string' },
   store: { type: 'string' }, host: { type: 'string' }, holders: { type: 'string' }, kind: { type: 'string' }, provider: { type: 'string' },
   owner: { type: 'string' }, purpose: { type: 'string' }, account: { type: 'string' }, plan: { type: 'string' }, clear: { type: 'string', multiple: true }, 'rotate-days': { type: 'string' }, service: { type: 'string' }, out: { type: 'string' },
   reason: { type: 'string' }, 'blocked-by': { type: 'string' }, deferred: { type: 'boolean' }, all: { type: 'boolean' }, variable: { type: 'string' }, path: { type: 'string' }, root: { type: 'string' }, id: { type: 'string' }, to: { type: 'string' }, by: { type: 'string' }, scan: { type: 'string', multiple: true }, recovery: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
@@ -57,7 +58,9 @@ const storeDir = o.store ?? process.env.CREDENTIALS_STORE, host = o.host ?? proc
 const fail = (message) => { process.stderr.write(`${message}\n`); process.exit(2); };
 if (!storeDir) fail('--store <services section data/credentials dir> (or CREDENTIALS_STORE) is required');
 // Rendering must not synthesize a missing store before verifying the host source.
-const store = command === 'init-store' ? createStore(storeDir) : openStore(storeDir);
+// Host identities live in the host's own machine state when named (CREDENTIALS_IDENTITIES), else <store>/hosts.
+const identities = o.identities ?? process.env.CREDENTIALS_IDENTITIES;
+const store = command === 'init-store' ? createStore(storeDir) : openStore(storeDir, identities ? { identities } : {});
 const needHost = () => host ?? fail('--host <this host> (or CREDENTIALS_HOST) is required');
 const list = (s) => (s ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 const readStdin = () => readFileSync(0, 'utf8').replace(/\r?\n$/u, '');

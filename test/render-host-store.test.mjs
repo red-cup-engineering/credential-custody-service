@@ -717,3 +717,25 @@ test('bulk conversion of legacy file consumers refuses collisions before editing
   assert.equal(readFileSync(join(root, 'runtime/keys/shared.pem'), 'utf8'), 'INERT_FIRST');
   assert.equal(readFileSync(join(root, 'runtime/keys/second.pem'), 'utf8'), 'INERT_SECOND');
 });
+
+test('host identities in the host machine state, outside the store, render the same credentials', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'credential-identities-test-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const storePath = join(root, 'store'), identities = join(root, 'state', 'hosts'), runtime = join(root, 'runtime'), host = 'fixture-host';
+  createStore(storePath);
+  const { mkdirSync, renameSync } = await import('node:fs');
+  const { openStore } = await import('../src/store.mjs');
+  mkdirSync(identities, { recursive: true, mode: 0o700 });
+  const store = openStore(storePath, { identities });
+  await store.initHost(host);
+  await store.put('fixture-value', 'INERT_VALUE', { holders: [host], consumers: [{ host, service: 'fixture-service', variable: 'TEST_VALUE' }] });
+  assert.equal(existsSync(join(storePath, 'hosts', `${host}.identity`)), false, 'no identity beside the store');
+  rmSync(join(storePath, 'hosts'), { recursive: true, force: true });
+  const unit = spawnSync(process.execPath, [new URL('../scripts/render-host.mjs', import.meta.url).pathname], { encoding: 'utf8',
+    env: { ...process.env, CREDENTIALS_STORE: storePath, CREDENTIALS_HOST: host, CREDENTIALS_RENDER_TO: runtime, CREDENTIALS_PULL: '0', CREDENTIALS_IDENTITIES: identities } });
+  assert.equal(unit.status, 0, unit.stderr);
+  assert.equal(readFileSync(join(runtime, 'fixture-service.env'), 'utf8'), 'TEST_VALUE=INERT_VALUE\n');
+  const without = spawnSync(process.execPath, [new URL('../scripts/render-host.mjs', import.meta.url).pathname], { encoding: 'utf8',
+    env: { ...process.env, CREDENTIALS_STORE: storePath, CREDENTIALS_HOST: host, CREDENTIALS_RENDER_TO: runtime, CREDENTIALS_PULL: '0' } });
+  assert.notEqual(without.status, 0, 'without CREDENTIALS_IDENTITIES the store-relative default applies and finds nothing');
+});

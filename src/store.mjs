@@ -68,7 +68,11 @@ export function createStore(dir) {
  * Open the credential store at `dir`. Opening only reads: a path that holds no store (no registry/) is refused by
  * name, never made into an empty store whose render then succeeds with nothing in it.
  */
-export function openStore(dir) {
+/**
+ * Open the store at `dir`. Host identities are private keys and live in `identities` (default `<dir>/hosts`): a host
+ * keeps them in its own machine state, outside the store's checkout, so a store tracked in Git never sits beside them.
+ */
+export function openStore(dir, { identities = join(dir ?? '', 'hosts') } = {}) {
   if (!dir) throw new TypeError('a credential store directory is required (a services section data/credentials/)');
   let registry;
   try { registry = statSync(join(dir, 'registry')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -91,11 +95,11 @@ export function openStore(dir) {
     return value;
   };
   const recordPath = (id) => { if (!ID.test(id)) throw new TypeError(`credential id ${id} must be lowercase letters, digits, dots and dashes`); return join(dir, 'registry', `${id}.json`); };
-  const identityPath = (host) => join(dir, 'hosts', `${assertCredentialHost(host)}.identity`);
+  const identityPath = (host) => join(identities, `${assertCredentialHost(host)}.identity`);
 
   function identity(host) {
     const path = identityPath(host);
-    if (!existsSync(path)) throw new Error(`host ${host} has no identity in ${join(dir, 'hosts')}; run: credentials init-host ${host}`);
+    if (!existsSync(path)) throw new Error(`host ${host} has no identity in ${identities}; run: credentials init-host ${host}`);
     if ((statSync(path).mode & 0o077) !== 0) throw new Error(`${path} is readable by others; chmod 600 it`);
     return readFileSync(path, 'utf8').trim();
   }
@@ -435,7 +439,7 @@ export function openStore(dir) {
 
     /** The environment a service runs with on a host: each consumer variable bound to its credential's value. */
     async render(host, service) {
-      await assertRenderableStore(dir, host);
+      await assertRenderableStore(dir, host, { identities });
       const lines = [], variables = new Set();
       for (const rec of records()) for (const c of rec.consumers ?? []) {
         if (c.host !== host || c.service !== service || !c.variable || c.file || c.path) continue;
@@ -526,7 +530,7 @@ export function openStore(dir) {
      * `files/<id>` per file credential. Re-run on a timer so rotations reach the services.
      */
     async renderHost(host, to) {
-      await assertRenderableStore(dir, host);
+      await assertRenderableStore(dir, host, { identities });
       return renderHostCredentials(this, host, to);
     },
 
